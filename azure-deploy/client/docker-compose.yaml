@@ -1,0 +1,12 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+      - ${TOKEN_DIR}:/etc/otel:ro
+    environment:
+      - SERVER_URL=${SERVER_URL}
+    restart: unless-stopped

@@ -1,0 +1,40 @@
+extensions:
+  health_check:
+  bearertokenauth:
+    filename: /etc/otel/token
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  otlphttp/remote:
+    endpoint: ${env:SERVER_URL}:4318
+    auth:
+      authenticator: bearertokenauth
+
+  debug:
+    verbosity: basic
+
+processors:
+  batch:
+
+service:
+  extensions: [health_check, bearertokenauth]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/remote]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/remote]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/remote]

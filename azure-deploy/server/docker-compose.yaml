@@ -1,0 +1,93 @@
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "443:443"
+      - "4318:4318"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - grafana
+      - otel-collector
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+    environment:
+      - TENANT_ID=${TENANT_ID}
+      - OTEL_CLIENT_ID=${OTEL_CLIENT_ID}
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:latest
+    volumes:
+      - ./tempo/tempo-config.yaml:/etc/tempo/config.yaml
+      - tempo-data:/var/tempo
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-remote-write-receiver"
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:latest
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/local-config.yaml
+      - loki-data:/loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    volumes:
+      - ./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
+      # Entra ID OAuth
+      - GF_SERVER_ROOT_URL=https://${SERVER_DOMAIN}
+      - GF_AUTH_AZUREAD_ENABLED=true
+      - GF_AUTH_AZUREAD_NAME=Azure AD
+      - GF_AUTH_AZUREAD_ALLOW_SIGN_UP=true
+      - GF_AUTH_AZUREAD_AUTO_LOGIN=true
+      - GF_AUTH_AZUREAD_CLIENT_ID=${GRAFANA_CLIENT_ID}
+      - GF_AUTH_AZUREAD_CLIENT_SECRET=${GRAFANA_CLIENT_SECRET}
+      - GF_AUTH_AZUREAD_SCOPES=openid email profile
+      - GF_AUTH_AZUREAD_AUTH_URL=https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize
+      - GF_AUTH_AZUREAD_TOKEN_URL=https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token
+      - GF_AUTH_AZUREAD_ALLOWED_ORGANIZATIONS=${TENANT_ID}
+      # Disable anonymous access for production
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_AUTH_DISABLE_LOGIN_FORM=false
+    restart: unless-stopped
+
+  session-api:
+    image: python:3.12-slim
+    volumes:
+      - ./session-api/server.py:/app/server.py:ro
+    working_dir: /app
+    command: ["python", "server.py"]
+    environment:
+      - TEMPO_URL=http://tempo:3200
+      - LOOKBACK_HOURS=${LOOKBACK_HOURS:-6}
+      - IDLE_GRACE_SECONDS=${IDLE_GRACE_SECONDS:-60}
+    restart: unless-stopped
+
+volumes:
+  tempo-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:
+  letsencrypt:
+    external: true
