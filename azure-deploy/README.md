@@ -18,7 +18,7 @@ Deploy the Grafana observability stack (Grafana + Tempo + Prometheus + Loki) to 
                         │
                         ▼
 ┌─────────────────────────────────────────────────┐
-│  Azure VM (B2s ~$13/mo)                         │
+│  Azure VM (B2s ~$60/mo)                         │
 │                                                 │
 │  nginx (TLS)                                    │
 │  ├── :443  ──► Grafana (Entra OAuth)            │
@@ -198,11 +198,11 @@ azure-deploy/
 
 | Resource | Monthly Cost |
 |----------|-------------|
-| B2s VM (2 vCPU, 4GB) | ~$13 |
+| B2s VM (2 vCPU, 4GB) | ~$60 |
 | 32GB OS disk | included |
 | Public IP (Standard) | ~$3 |
 | Bandwidth (low volume) | ~$1 |
-| **Total** | **~$17/mo** |
+| **Total** | **~$64/mo** |
 
 ## Troubleshooting
 
