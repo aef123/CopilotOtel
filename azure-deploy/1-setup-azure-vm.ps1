@@ -7,8 +7,11 @@
     Opens ports 443 (Grafana), 4318 (OTLP), and 22 (SSH).
     Optionally locks OTLP port to specific source IPs.
 
+    If -CustomDomain is provided, the script outputs a CNAME record you
+    need to create in your DNS provider before continuing to step 2.
+
 .EXAMPLE
-    .\1-setup-azure-vm.ps1 -ResourceGroup "rg-copilot-otel" -Location "eastus" -VmName "mycopilototel"
+    .\1-setup-azure-vm.ps1 -ResourceGroup "rg-copilot-otel" -Location "eastus" -VmName "mycopilototel" -CustomDomain "otel.andrewfaust.com"
 #>
 
 param(
@@ -17,8 +20,10 @@ param(
 
     [string]$Location = "eastus",
 
-    [Parameter(Mandatory, HelpMessage = "VM name, also used as DNS label (<name>.region.cloudapp.azure.com)")]
+    [Parameter(Mandatory, HelpMessage = "VM name, also used as fallback DNS label (<name>.region.cloudapp.azure.com)")]
     [string]$VmName,
+
+    [string]$CustomDomain,
 
     [string]$VmSize = "Standard_B2s",
     [string]$AdminUser = "azureuser",
@@ -58,6 +63,8 @@ az network public-ip update `
 
 $fqdn = "$VmName.$Location.cloudapp.azure.com"
 Write-Host "  FQDN: $fqdn"
+
+$serverDomain = if ($CustomDomain) { $CustomDomain } else { $fqdn }
 
 Write-Host "=== Configuring NSG ===" -ForegroundColor Cyan
 $nsgName = az network nsg list `
@@ -104,11 +111,28 @@ Write-Host @"
 
   SSH:    ssh ${AdminUser}@${fqdn}
   FQDN:  $fqdn
+  Domain: $serverDomain
 
+"@
+
+if ($CustomDomain) {
+    Write-Host "=== DNS Configuration Required ===" -ForegroundColor Yellow
+    Write-Host @"
+
+  Create a CNAME record in your DNS provider:
+
+    $CustomDomain  CNAME  $fqdn
+
+  Wait for DNS propagation before running deploy.sh (verify with: nslookup $CustomDomain)
+
+"@
+}
+
+Write-Host @"
 Next steps:
-  1. SSH into the VM
+  1. $(if ($CustomDomain) { "Create the CNAME record above and verify DNS propagation" } else { "SSH into the VM" })
   2. Copy the server/ folder to the VM:
      scp -r server/* ${AdminUser}@${fqdn}:~/otel-stack/
-  3. On the VM: cd ~/otel-stack && bash deploy.sh $fqdn
+  3. On the VM: cd ~/otel-stack && bash deploy.sh $serverDomain
 
 "@

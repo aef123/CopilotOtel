@@ -2,7 +2,7 @@
 # Run this ON the Azure VM after SSH-ing in.
 # Usage: bash deploy.sh <server-domain>
 #
-# Example: bash deploy.sh myotel.eastus.cloudapp.azure.com
+# Example: bash deploy.sh otel.andrewfaust.com
 
 set -euo pipefail
 

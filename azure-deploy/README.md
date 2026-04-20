@@ -45,32 +45,46 @@ Deploy the Grafana observability stack (Grafana + Tempo + Prometheus + Loki) to 
 - Az PowerShell module (`Install-Module Az`)
 - Docker on the Azure VM and on each client machine
 - PowerShell 7+ on client machines (for `New-SelfSignedCertificate` and crypto APIs)
+- A custom domain you control (e.g. `otel.yourdomain.com`) for TLS certificates
 
 ## Setup Steps
 
 ### Step 1: Create the Azure VM
 
-Create the VM first so you have the FQDN for the Entra app registrations:
-
 ```powershell
 .\1-setup-azure-vm.ps1 `
     -ResourceGroup "rg-copilot-otel" `
     -Location "eastus" `
-    -VmName "mycopilototel"
+    -VmName "mycopilototel" `
+    -CustomDomain "otel.andrewfaust.com"
 ```
 
 Optional: lock OTLP to specific IPs with `-AllowOtlpFromIps "1.2.3.4","5.6.7.8"`.
 
-This gives you a FQDN like `mycopilototel.eastus.cloudapp.azure.com`. You'll use it in the next step.
+### Step 2: Configure DNS
 
-### Step 2: Create Entra App Registrations
+Create a CNAME record in your DNS provider:
 
-Run once from any machine with the Az module, using the FQDN from step 1:
+| Type | Name | Value |
+|------|------|-------|
+| CNAME | `otel` | `mycopilototel.eastus.cloudapp.azure.com` |
+
+Wait for propagation, then verify:
+
+```
+nslookup otel.andrewfaust.com
+```
+
+This is required before step 4, because Let's Encrypt needs to reach your domain to issue a TLS certificate.
+
+### Step 3: Create Entra App Registrations
+
+Run once from any machine with the Az module, using your custom domain:
 
 ```powershell
 .\2-setup-entra.ps1 `
     -TenantId "your-tenant-id" `
-    -GrafanaUrl "https://mycopilototel.eastus.cloudapp.azure.com"
+    -GrafanaUrl "https://otel.andrewfaust.com"
 ```
 
 This creates two app registrations:
@@ -79,7 +93,7 @@ This creates two app registrations:
 
 Save the output values. You'll need them for the server `.env` file.
 
-### Step 3: Deploy the Server Stack
+### Step 4: Deploy the Server Stack
 
 Copy the server files to the VM:
 
@@ -87,12 +101,12 @@ Copy the server files to the VM:
 scp -r azure-deploy/server/* azureuser@mycopilototel.eastus.cloudapp.azure.com:~/otel-stack/
 ```
 
-SSH in and run the deploy script:
+SSH in and run the deploy script with your custom domain:
 
 ```bash
 ssh azureuser@mycopilototel.eastus.cloudapp.azure.com
 cd ~/otel-stack
-bash deploy.sh mycopilototel.eastus.cloudapp.azure.com
+bash deploy.sh otel.andrewfaust.com
 ```
 
 The script will:
@@ -107,7 +121,7 @@ After editing `.env`, start the stack:
 docker compose up -d
 ```
 
-### Step 4: Push the Dashboards
+### Step 5: Push the Dashboards
 
 From your local machine, update the dashboard scripts to point at your Azure Grafana:
 
@@ -118,7 +132,7 @@ python create-mission-control-v4.py
 python create-dashboard.py
 ```
 
-### Step 5: Set Up Each Client Machine
+### Step 6: Set Up Each Client Machine
 
 Run on each developer machine:
 
@@ -128,7 +142,7 @@ cd azure-deploy\client
 .\setup-client.ps1 `
     -TenantId "your-tenant-id" `
     -ClientId "your-otel-client-id" `
-    -ServerUrl "https://mycopilototel.eastus.cloudapp.azure.com"
+    -ServerUrl "https://otel.andrewfaust.com"
 ```
 
 This will:
@@ -196,6 +210,6 @@ azure-deploy/
 
 **OIDC validation fails on server**: Ensure `accessTokenAcceptedVersion: 2` is set on the Entra app manifest. The OTel OIDC extension requires v2 tokens.
 
-**Let's Encrypt fails**: Port 80 must be open during initial cert generation. The deploy script opens it via NSG. Certbot uses HTTP-01 challenge.
+**Let's Encrypt fails**: Your custom domain's CNAME must resolve to the VM's Azure FQDN before running `deploy.sh`. Port 80 must be open during initial cert generation. Verify with `nslookup your.domain.com`.
 
 **Grafana OAuth loop**: Check `GF_SERVER_ROOT_URL` matches the actual URL including `https://`. The redirect URI in Entra must be `https://<domain>/login/azuread`.
