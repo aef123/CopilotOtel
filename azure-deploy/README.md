@@ -48,14 +48,29 @@ Deploy the Grafana observability stack (Grafana + Tempo + Prometheus + Loki) to 
 
 ## Setup Steps
 
-### Step 1: Create Entra App Registrations
+### Step 1: Create the Azure VM
 
-Run once from any machine with the Az module:
+Create the VM first so you have the FQDN for the Entra app registrations:
 
 ```powershell
-.\1-setup-entra.ps1 `
+.\1-setup-azure-vm.ps1 `
+    -ResourceGroup "rg-copilot-otel" `
+    -Location "eastus" `
+    -DnsLabel "mycopilototel"
+```
+
+Optional: lock OTLP to specific IPs with `-AllowOtlpFromIps "1.2.3.4","5.6.7.8"`.
+
+This gives you a FQDN like `mycopilototel.eastus.cloudapp.azure.com`. You'll use it in the next step.
+
+### Step 2: Create Entra App Registrations
+
+Run once from any machine with the Az module, using the FQDN from step 1:
+
+```powershell
+.\2-setup-entra.ps1 `
     -TenantId "your-tenant-id" `
-    -GrafanaUrl "https://myotel.eastus.cloudapp.azure.com"
+    -GrafanaUrl "https://mycopilototel.eastus.cloudapp.azure.com"
 ```
 
 This creates two app registrations:
@@ -63,17 +78,6 @@ This creates two app registrations:
 2. **Copilot OTel Grafana**: Used by Grafana for user sign-in via OAuth2.
 
 Save the output values. You'll need them for the server `.env` file.
-
-### Step 2: Create the Azure VM
-
-```powershell
-.\2-setup-azure-vm.ps1 `
-    -ResourceGroup "rg-copilot-otel" `
-    -Location "eastus" `
-    -DnsLabel "mycopilototel"
-```
-
-Optional: lock OTLP to specific IPs with `-AllowOtlpFromIps "1.2.3.4","5.6.7.8"`.
 
 ### Step 3: Deploy the Server Stack
 
@@ -156,8 +160,8 @@ Delete the certificate for the machine. Its existing token will expire within 60
 ```
 azure-deploy/
 ├── README.md                           # This file
-├── 1-setup-entra.ps1                   # Create Entra app registrations
-├── 2-setup-azure-vm.ps1                # Create Azure VM
+├── 1-setup-azure-vm.ps1                # Create Azure VM
+├── 2-setup-entra.ps1                   # Create Entra app registrations
 ├── server/
 │   ├── .env.template                   # Configuration values (copy to .env)
 │   ├── docker-compose.yaml             # All server services

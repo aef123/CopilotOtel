@@ -8,7 +8,7 @@
     Optionally locks OTLP port to specific source IPs.
 
 .EXAMPLE
-    .\2-setup-azure-vm.ps1 -ResourceGroup "rg-copilot-otel" -Location "eastus" -DnsLabel "mycopilototel"
+    .\1-setup-azure-vm.ps1 -ResourceGroup "rg-copilot-otel" -Location "eastus" -DnsLabel "mycopilototel"
 #>
 
 param(
