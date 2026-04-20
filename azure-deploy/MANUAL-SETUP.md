@@ -18,11 +18,11 @@ If you prefer to create Azure resources through the portal (or CLI) instead of r
 - **Public IP**: Standard SKU
 - **OS Disk**: 32GB (default)
 
-### 3. Public IP DNS Label
+### 3. Public IP
 
-Set the DNS label on the VM's public IP so it gets an Azure FQDN (e.g. `mycopilototel.eastus.cloudapp.azure.com`). You need this as the CNAME target for your custom domain.
-
-Portal path: VM > Networking > Public IP > Configuration > DNS name label.
+- **SKU**: Standard
+- **Assignment**: Static (so the IP doesn't change on VM restart)
+- No DNS label needed since you're using a custom domain
 
 ### 4. NSG Rules
 
@@ -39,11 +39,11 @@ Port 80 is only needed for the initial Let's Encrypt certificate challenge. You 
 
 ## DNS (Your Provider)
 
-Create a CNAME record pointing your custom domain to the Azure FQDN:
+Create an A record pointing your custom domain to the VM's public IP:
 
 | Type | Name | Value |
 |------|------|-------|
-| CNAME | `otel` | `mycopilototel.eastus.cloudapp.azure.com` |
+| A | `otel` | `<VM's public IP address>` |
 
 Verify propagation before proceeding:
 

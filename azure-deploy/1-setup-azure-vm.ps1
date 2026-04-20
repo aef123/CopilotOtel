@@ -119,9 +119,9 @@ if ($CustomDomain) {
     Write-Host "=== DNS Configuration Required ===" -ForegroundColor Yellow
     Write-Host @"
 
-  Create a CNAME record in your DNS provider:
+  Create an A record in your DNS provider:
 
-    $CustomDomain  CNAME  $fqdn
+    $CustomDomain  A  $publicIp
 
   Wait for DNS propagation before running deploy.sh (verify with: nslookup $CustomDomain)
 

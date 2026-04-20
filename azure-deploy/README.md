@@ -63,11 +63,11 @@ Optional: lock OTLP to specific IPs with `-AllowOtlpFromIps "1.2.3.4","5.6.7.8"`
 
 ### Step 2: Configure DNS
 
-Create a CNAME record in your DNS provider:
+Create an A record in your DNS provider pointing to the VM's public IP:
 
 | Type | Name | Value |
 |------|------|-------|
-| CNAME | `otel` | `mycopilototel.eastus.cloudapp.azure.com` |
+| A | `otel` | `<VM's public IP address>` |
 
 Wait for propagation, then verify:
 
