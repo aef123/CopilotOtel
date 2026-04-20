@@ -8,7 +8,7 @@
     Optionally locks OTLP port to specific source IPs.
 
 .EXAMPLE
-    .\1-setup-azure-vm.ps1 -ResourceGroup "rg-copilot-otel" -Location "eastus" -DnsLabel "mycopilototel"
+    .\1-setup-azure-vm.ps1 -ResourceGroup "rg-copilot-otel" -Location "eastus" -VmName "mycopilototel"
 #>
 
 param(
@@ -17,10 +17,9 @@ param(
 
     [string]$Location = "eastus",
 
-    [Parameter(Mandatory, HelpMessage = "DNS label for the VM, becomes <label>.eastus.cloudapp.azure.com")]
-    [string]$DnsLabel,
+    [Parameter(Mandatory, HelpMessage = "VM name, also used as DNS label (<name>.region.cloudapp.azure.com)")]
+    [string]$VmName,
 
-    [string]$VmName = "copilot-otel-vm",
     [string]$VmSize = "Standard_B2s",
     [string]$AdminUser = "azureuser",
 
@@ -54,10 +53,10 @@ $ipName = az network public-ip list `
 az network public-ip update `
     --resource-group $ResourceGroup `
     --name $ipName `
-    --dns-name $DnsLabel `
+    --dns-name $VmName `
     --output none
 
-$fqdn = "$DnsLabel.$Location.cloudapp.azure.com"
+$fqdn = "$VmName.$Location.cloudapp.azure.com"
 Write-Host "  FQDN: $fqdn"
 
 Write-Host "=== Configuring NSG ===" -ForegroundColor Cyan

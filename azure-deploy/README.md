@@ -56,7 +56,7 @@ Create the VM first so you have the FQDN for the Entra app registrations:
 .\1-setup-azure-vm.ps1 `
     -ResourceGroup "rg-copilot-otel" `
     -Location "eastus" `
-    -DnsLabel "mycopilototel"
+    -VmName "mycopilototel"
 ```
 
 Optional: lock OTLP to specific IPs with `-AllowOtlpFromIps "1.2.3.4","5.6.7.8"`.
