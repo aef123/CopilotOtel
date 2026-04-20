@@ -29,22 +29,26 @@ export interface SessionDetail {
   turns: Turn[];
 }
 
-export interface Span {
-  traceID: string;
-  spanID: string;
-  parentSpanID: string;
-  operationName: string;
-  serviceName: string;
-  startTime: number;
-  duration: number;
+export interface ApiSpan {
+  span_id: string;
+  parent_span_id: string;
+  name: string;
+  service: string;
+  host: string;
+  start_time: number;
+  duration_ms: number;
+  status: string;
   attributes: Record<string, string>;
-  children?: Span[];
+}
+
+export interface SpanNode {
+  span: ApiSpan;
+  children: SpanNode[];
 }
 
 export interface TraceDetail {
-  traceId: string;
-  rootSpan: Span;
-  spans: Span[];
+  trace_id: string;
+  spans: ApiSpan[];
 }
 
 export interface TokenUsagePoint {

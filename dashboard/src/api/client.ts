@@ -6,6 +6,7 @@ import type {
   ModelUsage,
   ToolUsage,
   HealthSummary,
+  ApiSpan,
 } from "./types";
 
 const BASE = "/dashboard-api";

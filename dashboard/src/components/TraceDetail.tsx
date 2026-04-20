@@ -1,8 +1,12 @@
 import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { getTraceDetail } from "../api/client";
-import type { TraceDetail as TraceDetailType, Span } from "../api/types";
+import type { TraceDetail as TraceDetailType, ApiSpan, SpanNode } from "../api/types";
 import { formatDuration } from "../utils/format";
+
+const GRAFANA_BASE = window.location.port === "8888"
+  ? "http://localhost:3000"
+  : window.location.origin;
 
 function spanClass(name: string): string {
   if (name === "invoke_agent") return "invoke";
@@ -11,55 +15,88 @@ function spanClass(name: string): string {
   return "other";
 }
 
+function buildTree(spans: ApiSpan[]): SpanNode[] {
+  const map = new Map<string, SpanNode>();
+  const roots: SpanNode[] = [];
+
+  for (const s of spans) {
+    map.set(s.span_id, { span: s, children: [] });
+  }
+
+  for (const s of spans) {
+    const node = map.get(s.span_id)!;
+    if (s.parent_span_id && map.has(s.parent_span_id)) {
+      map.get(s.parent_span_id)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  const sortChildren = (node: SpanNode) => {
+    node.children.sort((a, b) => a.span.start_time - b.span.start_time);
+    node.children.forEach(sortChildren);
+  };
+  roots.forEach(sortChildren);
+
+  return roots;
+}
+
 function SpanRow({
-  span,
+  node,
   depth,
   traceStart,
   traceDuration,
 }: {
-  span: Span;
+  node: SpanNode;
   depth: number;
   traceStart: number;
   traceDuration: number;
 }) {
+  const s = node.span;
   const offsetPct = traceDuration > 0
-    ? ((span.startTime - traceStart) / traceDuration) * 100
+    ? ((s.start_time - traceStart) / traceDuration) * 100
     : 0;
   const widthPct = traceDuration > 0
-    ? (span.duration / traceDuration) * 100
+    ? (s.duration_ms / traceDuration) * 100
     : 100;
 
-  const toolName = span.attributes?.["gen_ai.tool.name"] || "";
-  const model = span.attributes?.["gen_ai.response.model"] || "";
+  const toolName = s.attributes?.["gen_ai.tool.name"] || "";
+  const model = s.attributes?.["gen_ai.response.model"] || "";
+  const inputTokens = s.attributes?.["gen_ai.usage.input_tokens"] || "";
+  const outputTokens = s.attributes?.["gen_ai.usage.output_tokens"] || "";
 
   return (
     <>
       <div className="span-row">
         <div className="span-indent" style={{ width: depth * 20 }} />
-        <div className="span-name">{span.operationName}</div>
+        <div className="span-name">
+          {s.name}
+          {toolName && <span className="span-tool-label"> ({toolName})</span>}
+        </div>
         <div className="span-bar-container">
           <div
-            className={`span-bar ${spanClass(span.operationName)}`}
+            className={`span-bar ${spanClass(s.name)}`}
             style={{
               left: `${Math.max(0, Math.min(offsetPct, 100))}%`,
               width: `${Math.max(0.5, Math.min(widthPct, 100 - offsetPct))}%`,
             }}
           />
         </div>
-        <div className="span-duration">{formatDuration(span.duration / 1000)}</div>
+        <div className="span-duration">{formatDuration(s.duration_ms)}</div>
       </div>
-      {span.attributes && (toolName || model) && (
+      {(model || inputTokens || outputTokens) && (
         <div className="span-row" style={{ paddingLeft: depth * 20 + 20 }}>
           <div className="span-attrs">
             {model && <span>model: {model} </span>}
-            {toolName && <span>tool: {toolName}</span>}
+            {inputTokens && <span>in: {inputTokens} </span>}
+            {outputTokens && <span>out: {outputTokens} </span>}
           </div>
         </div>
       )}
-      {span.children?.map((child) => (
+      {node.children.map((child) => (
         <SpanRow
-          key={child.spanID}
-          span={child}
+          key={child.span.span_id}
+          node={child}
           depth={depth + 1}
           traceStart={traceStart}
           traceDuration={traceDuration}
@@ -87,12 +124,17 @@ export function TraceDetail() {
 
   if (loading) return <div className="loading">Loading trace...</div>;
   if (error) return <div className="error-message">{error}</div>;
-  if (!trace) return <div className="empty-state">Trace not found</div>;
+  if (!trace || trace.spans.length === 0) {
+    return <div className="empty-state">Trace not found</div>;
+  }
 
-  const traceStart = trace.rootSpan.startTime;
-  const traceDuration = Math.max(
-    ...trace.spans.map((s) => s.startTime + s.duration)
-  ) - traceStart;
+  const roots = buildTree(trace.spans);
+  const allSpans = trace.spans;
+  const traceStart = Math.min(...allSpans.map((s) => s.start_time));
+  const traceEnd = Math.max(...allSpans.map((s) => s.start_time + s.duration_ms));
+  const traceDuration = traceEnd - traceStart;
+
+  const grafanaUrl = `${GRAFANA_BASE}/explore?left={"datasource":"P214B5B846CF3925F","queries":[{"refId":"A","queryType":"traceql","query":"${traceId}"}],"range":{"from":"now-6h","to":"now"}}`;
 
   return (
     <>
@@ -103,28 +145,44 @@ export function TraceDetail() {
           <div className="detail-field">
             <div className="label">Trace ID</div>
             <div className="value" style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>
-              {trace.traceId}
+              {trace.trace_id}
             </div>
           </div>
           <div className="detail-field">
             <div className="label">Spans</div>
-            <div className="value">{trace.spans.length}</div>
+            <div className="value">{allSpans.length}</div>
           </div>
           <div className="detail-field">
             <div className="label">Total Duration</div>
-            <div className="value">{formatDuration(traceDuration / 1000)}</div>
+            <div className="value">{formatDuration(traceDuration)}</div>
+          </div>
+          <div className="detail-field">
+            <div className="label">Grafana</div>
+            <div className="value">
+              <a
+                href={grafanaUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "var(--accent)", fontSize: 12 }}
+              >
+                View in Grafana/Tempo &rarr;
+              </a>
+            </div>
           </div>
         </div>
       </div>
 
       <h2>Span Tree</h2>
       <div className="span-tree">
-        <SpanRow
-          span={trace.rootSpan}
-          depth={0}
-          traceStart={traceStart}
-          traceDuration={traceDuration}
-        />
+        {roots.map((root) => (
+          <SpanRow
+            key={root.span.span_id}
+            node={root}
+            depth={0}
+            traceStart={traceStart}
+            traceDuration={traceDuration}
+          />
+        ))}
       </div>
     </>
   );

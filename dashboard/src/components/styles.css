@@ -373,6 +373,12 @@
   min-width: 150px;
 }
 
+.span-tool-label {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .span-bar-container {
   flex: 1;
   height: 16px;
