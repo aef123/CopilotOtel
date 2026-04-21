@@ -72,6 +72,8 @@ services:
       # Disable anonymous access for production
       - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_AUTH_DISABLE_LOGIN_FORM=false
+      # Auto-assign role for new users (from .env)
+      - GF_USERS_AUTO_ASSIGN_ORG_ROLE=${GF_USERS_AUTO_ASSIGN_ORG_ROLE:-Admin}
     restart: unless-stopped
 
   session-api:

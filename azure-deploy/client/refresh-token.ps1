@@ -88,7 +88,7 @@ $parentDir = Split-Path $TokenFilePath -Parent
 if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
 
 $tempFile = "$TokenFilePath.tmp"
-$response.access_token | Set-Content -Path $tempFile -NoNewline -Encoding UTF8
+[System.IO.File]::WriteAllText($tempFile, $response.access_token)
 Move-Item -Path $tempFile -Destination $TokenFilePath -Force
 
 Write-Host "Token refreshed at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'). Expires in $($response.expires_in)s."

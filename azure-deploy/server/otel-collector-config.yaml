@@ -1,7 +1,7 @@
 extensions:
   health_check:
   oidc:
-    issuer_url: "https://login.microsoftonline.com/${env:TENANT_ID}/v2.0"
+    issuer_url: "https://sts.windows.net/${env:TENANT_ID}/"
     audience: "${env:OTEL_CLIENT_ID}"
 
 receivers:
