@@ -160,11 +160,18 @@ def query_prometheus_range(promql, start, end, step="60s"):
 # ---------------------------------------------------------------------------
 
 def compute_sessions():
-    completed_data = query_tempo(
+    # Query both Copilot and Claude sessions
+    copilot_data = query_tempo(
         '{resource.service.name="github-copilot" && name="invoke_agent"}'
         ' | select(span.gen_ai.conversation.id, span.gen_ai.agent.version,'
         ' span.gen_ai.response.model, span.gen_ai.usage.input_tokens,'
         ' span.gen_ai.usage.output_tokens, resource.host.name)'
+    )
+    claude_data = query_tempo(
+        '{resource.service.name=~"claude.*" && name=~".*"}'
+        ' | select(span.gen_ai.conversation.id, span.gen_ai.response.model,'
+        ' span.gen_ai.usage.input_tokens, span.gen_ai.usage.output_tokens,'
+        ' resource.host.name, resource.service.name)'
     )
     children_data = query_tempo(
         '{resource.service.name="github-copilot" && name!="invoke_agent"'
@@ -175,49 +182,55 @@ def compute_sessions():
         "max_time": 0, "min_time": float("inf"), "turns": 0,
         "version": "", "duration_ns": 0, "host": "", "model": "",
         "total_input_tokens": 0, "total_output_tokens": 0,
-        "trace_ids": set(),
+        "trace_ids": set(), "source": "",
     })
     children_max = defaultdict(int)
 
-    for trace in completed_data.get("traces", []):
-        trace_id = trace.get("traceID", "")
-        for ss in trace.get("spanSets", []):
-            for span in ss.get("spans", []):
-                sid = get_attr(span, "gen_ai.conversation.id")
-                if not sid:
-                    continue
-                t = int(span["startTimeUnixNano"]) // 1_000_000
-                dur = int(span.get("durationNanos", 0))
-                end_t = t + dur // 1_000_000
-                rec = sessions[sid]
-                rec["turns"] += 1
-                rec["min_time"] = min(rec["min_time"], t)
-                if trace_id:
-                    rec["trace_ids"].add(trace_id)
-                if end_t > rec["max_time"]:
-                    rec["max_time"] = end_t
-                    rec["duration_ns"] = dur
-                ver = get_attr(span, "gen_ai.agent.version")
-                if ver:
-                    rec["version"] = ver
-                host = get_attr(span, "host.name")
-                if host:
-                    rec["host"] = host
-                model = get_attr(span, "gen_ai.response.model")
-                if model:
-                    rec["model"] = model
-                inp = get_attr(span, "gen_ai.usage.input_tokens")
-                if inp:
-                    try:
-                        rec["total_input_tokens"] += int(inp)
-                    except (ValueError, TypeError):
-                        pass
-                out = get_attr(span, "gen_ai.usage.output_tokens")
-                if out:
-                    try:
-                        rec["total_output_tokens"] += int(out)
-                    except (ValueError, TypeError):
-                        pass
+    def process_spans(data, source_name):
+        for trace in data.get("traces", []):
+            trace_id = trace.get("traceID", "")
+            for ss in trace.get("spanSets", []):
+                for span in ss.get("spans", []):
+                    sid = get_attr(span, "gen_ai.conversation.id")
+                    if not sid:
+                        continue
+                    t = int(span["startTimeUnixNano"]) // 1_000_000
+                    dur = int(span.get("durationNanos", 0))
+                    end_t = t + dur // 1_000_000
+                    rec = sessions[sid]
+                    rec["turns"] += 1
+                    rec["min_time"] = min(rec["min_time"], t)
+                    if trace_id:
+                        rec["trace_ids"].add(trace_id)
+                    if end_t > rec["max_time"]:
+                        rec["max_time"] = end_t
+                        rec["duration_ns"] = dur
+                    if source_name and not rec["source"]:
+                        rec["source"] = source_name
+                    ver = get_attr(span, "gen_ai.agent.version")
+                    if ver:
+                        rec["version"] = ver
+                    host = get_attr(span, "host.name")
+                    if host:
+                        rec["host"] = host
+                    model = get_attr(span, "gen_ai.response.model")
+                    if model:
+                        rec["model"] = model
+                    inp = get_attr(span, "gen_ai.usage.input_tokens")
+                    if inp:
+                        try:
+                            rec["total_input_tokens"] += int(inp)
+                        except (ValueError, TypeError):
+                            pass
+                    out = get_attr(span, "gen_ai.usage.output_tokens")
+                    if out:
+                        try:
+                            rec["total_output_tokens"] += int(out)
+                        except (ValueError, TypeError):
+                            pass
+
+    process_spans(copilot_data, "Copilot")
+    process_spans(claude_data, "Claude")
 
     for trace in children_data.get("traces", []):
         for ss in trace.get("spanSets", []):
@@ -252,6 +265,7 @@ def compute_sessions():
         rows.append({
             "session_id": sid,
             "status": status,
+            "source": c["source"] if c else "",
             "host": c["host"] if c else "",
             "model": c["model"] if c else "",
             "last_activity": last_activity,
@@ -374,12 +388,17 @@ def get_metrics_token_usage():
         'sum by (gen_ai_token_type) (rate(gen_ai_client_token_usage_count[5m]))',
         start, now, "60s"
     )
-    series = []
+    # Build a time-indexed map: {timestamp_ms: {input: v, output: v}}
+    points = {}
     for s in result.get("data", {}).get("result", []):
         token_type = s["metric"].get("gen_ai_token_type", "unknown")
-        points = [{"time": int(float(v[0]) * 1000), "value": float(v[1])} for v in s["values"]]
-        series.append({"label": token_type, "data": points})
-    return series
+        key = "input" if "input" in token_type.lower() else "output"
+        for v in s["values"]:
+            ts = int(float(v[0]) * 1000)
+            if ts not in points:
+                points[ts] = {"timestamp": ts, "input": 0, "output": 0}
+            points[ts][key] = float(v[1])
+    return sorted(points.values(), key=lambda p: p["timestamp"])
 
 
 def get_metrics_operations():
@@ -404,23 +423,20 @@ def get_metrics_models():
     items = []
     for s in result.get("data", {}).get("result", []):
         model = s["metric"].get("gen_ai_response_model", "unknown")
-        items.append({"model": model, "count": float(s["value"][1])})
+        items.append({"model": model, "totalInput": float(s["value"][1]), "totalOutput": 0, "count": 1})
     return items
 
 
 def get_metrics_tools():
-    now = int(time.time())
-    start = now - (LOOKBACK_HOURS * 3600)
-    result = query_prometheus_range(
-        'sum by (gen_ai_tool_name) (rate(github_copilot_tool_call_count[5m]))',
-        start, now, "60s"
+    result = query_prometheus(
+        'sum by (gen_ai_tool_name) (github_copilot_tool_call_count)'
     )
-    series = []
+    items = []
     for s in result.get("data", {}).get("result", []):
         tool = s["metric"].get("gen_ai_tool_name", "unknown")
-        points = [{"time": int(float(v[0]) * 1000), "value": float(v[1])} for v in s["values"]]
-        series.append({"label": tool, "data": points})
-    return series
+        items.append({"tool": tool, "count": float(s["value"][1]), "avgDurationMs": 0})
+    items.sort(key=lambda x: x["count"], reverse=True)
+    return items
 
 
 def get_health_summary():

@@ -14,6 +14,8 @@ export function SessionList({ sessions }: { sessions: Session[] }) {
       <thead>
         <tr>
           <th>Status</th>
+          <th>Source</th>
+          <th>Session ID</th>
           <th>Machine</th>
           <th>Model</th>
           <th>Turns</th>
@@ -26,6 +28,8 @@ export function SessionList({ sessions }: { sessions: Session[] }) {
         {sessions.map((s) => (
           <tr key={s.sessionId} onClick={() => nav(`/sessions/${s.sessionId}`)}>
             <td><span className={`badge badge-${s.status.toLowerCase()}`}>{s.status}</span></td>
+            <td>{s.source && <span className={`badge badge-source-${s.source.toLowerCase()}`}>{s.source}</span>}</td>
+            <td className="session-id-cell" title={s.sessionId}>{s.sessionId.slice(0, 12)}...</td>
             <td>{s.machine || "Unknown"}</td>
             <td>{s.model}</td>
             <td>{s.turns}</td>

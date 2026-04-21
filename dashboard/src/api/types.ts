@@ -2,6 +2,7 @@ export interface Session {
   sessionId: string;
   machine: string;
   status: string;
+  source: string;
   model: string;
   version: string;
   turns: number;

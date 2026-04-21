@@ -256,6 +256,22 @@
   color: var(--red);
 }
 
+.badge-source-copilot {
+  color: #58a6ff;
+}
+
+.badge-source-copilot::before {
+  background: #58a6ff;
+}
+
+.badge-source-claude {
+  color: #c084fc;
+}
+
+.badge-source-claude::before {
+  background: #c084fc;
+}
+
 /* ========== Filters ========== */
 .filters {
   display: flex;
@@ -456,6 +472,19 @@
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
+}
+
+.session-card-id {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: monospace;
+  opacity: 0.7;
+}
+
+.session-id-cell {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .session-card-meta {

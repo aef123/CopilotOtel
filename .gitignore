@@ -1,0 +1,5 @@
+.env
+*.cer
+*.pfx
+*.pem
+node_modules/

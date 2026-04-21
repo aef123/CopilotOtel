@@ -19,9 +19,11 @@ export function SessionGrid({ sessions }: { sessions: Session[] }) {
         >
           <div className="session-card-header">
             <span className={`badge badge-${s.status.toLowerCase()}`}>{s.status}</span>
+            {s.source && <span className={`badge badge-source-${s.source.toLowerCase()}`}>{s.source}</span>}
             <span className="session-card-heartbeat">{timeAgo(s.lastActivity)}</span>
           </div>
           <div className="session-card-machine">{s.machine || "Unknown"}</div>
+          <div className="session-card-id">{s.sessionId.slice(0, 12)}...</div>
           <div className="session-card-meta">
             {s.model && <span className="session-card-model">{s.model}</span>}
             {s.version && <span className="session-card-version">v{s.version}</span>}

@@ -25,6 +25,7 @@ function mapSession(raw: any): Session {
     sessionId: raw.session_id,
     machine: raw.host || "",
     status: raw.status,
+    source: raw.source || "",
     model: raw.model || "",
     version: raw.cli_version || "",
     turns: raw.turns || 0,
