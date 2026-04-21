@@ -6,7 +6,9 @@ services:
       - "4318:4318"
     volumes:
       - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
-      - ${TOKEN_DIR}:/etc/otel:ro
     environment:
       - SERVER_URL=${SERVER_URL}
+      - ENTRA_TENANT_ID=${ENTRA_TENANT_ID}
+      - ENTRA_CLIENT_ID=${ENTRA_CLIENT_ID}
+      - ENTRA_CLIENT_SECRET=${ENTRA_CLIENT_SECRET}
     restart: unless-stopped

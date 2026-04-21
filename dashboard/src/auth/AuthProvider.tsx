@@ -1,6 +1,23 @@
 import { useState, useEffect, ReactNode } from "react";
-import { MsalProvider } from "@azure/msal-react";
-import { msalInstance, isMsalConfigured } from "./msalConfig";
+import { MsalProvider, useIsAuthenticated, useMsal } from "@azure/msal-react";
+import { msalInstance, isMsalConfigured, loginRequest } from "./msalConfig";
+
+function LoginGate({ children }: { children: ReactNode }) {
+  const isAuthenticated = useIsAuthenticated();
+  const { instance, inProgress } = useMsal();
+
+  useEffect(() => {
+    if (!isAuthenticated && inProgress === "none") {
+      instance.loginRedirect(loginRequest);
+    }
+  }, [isAuthenticated, inProgress, instance]);
+
+  if (!isAuthenticated) {
+    return <div style={{ padding: 40, color: "#9990b8" }}>Signing in...</div>;
+  }
+
+  return <>{children}</>;
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(!isMsalConfigured);
@@ -27,5 +44,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return <>{children}</>;
   }
 
-  return <MsalProvider instance={msalInstance}>{children}</MsalProvider>;
+  return (
+    <MsalProvider instance={msalInstance}>
+      <LoginGate>{children}</LoginGate>
+    </MsalProvider>
+  );
 }

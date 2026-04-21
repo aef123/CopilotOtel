@@ -1,17 +1,20 @@
 import { useState, useEffect } from "react";
 import { getHealth } from "../api/client";
+import { useAuth } from "../auth/useAuth";
 import type { HealthSummary } from "../api/types";
 import { formatTokens } from "../utils/format";
 
 export function HealthDashboard() {
+  const { getAccessToken } = useAuth();
   const [health, setHealth] = useState<HealthSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let mounted = true;
-    const load = () => {
-      getHealth()
+    const load = async () => {
+      const token = await getAccessToken();
+      getHealth(token)
         .then((h) => { if (mounted) setHealth(h); })
         .catch((e) => { if (mounted) setError(e.message); })
         .finally(() => { if (mounted) setLoading(false); });

@@ -87,6 +87,8 @@ services:
       - PROMETHEUS_URL=http://prometheus:9090
       - LOOKBACK_HOURS=${LOOKBACK_HOURS:-6}
       - IDLE_GRACE_SECONDS=${IDLE_GRACE_SECONDS:-60}
+      - TENANT_ID=${TENANT_ID}
+      - EXPECTED_AUDIENCE=${GRAFANA_CLIENT_ID}
     restart: unless-stopped
 
 volumes:

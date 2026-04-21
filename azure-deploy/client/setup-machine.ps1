@@ -1,93 +1,78 @@
 <#
 .SYNOPSIS
-    Sets up a machine to forward Copilot CLI telemetry to the Azure OTel stack.
+    Sets up a machine to forward Copilot CLI and Claude Code telemetry to the Azure OTel stack.
 
 .DESCRIPTION
-    Assumes the client certificate is already installed in the current user's
-    cert store and already uploaded to the Entra app registration.
+    Uses the oauth2client extension in the OTel collector to handle token
+    acquisition and refresh automatically via client_credentials flow.
+    No certificates, token files, or scheduled tasks needed.
 
     This script:
-    1. Finds the certificate by subject name
-    2. Acquires an initial access token
-    3. Creates a scheduled task to refresh the token every 30 minutes
-    4. Starts a local OTel collector (Docker) that forwards to Azure with auth
-    5. Sets persistent user environment variables for Copilot CLI
+    1. Prompts for the client secret (if not provided)
+    2. Starts a local OTel collector (Docker) that forwards to Azure with auth
+    3. Sets persistent user environment variables for Copilot CLI and Claude Code
 
 .EXAMPLE
     .\setup-machine.ps1
-    .\setup-machine.ps1 -CertSubject "CN=my-custom-cert"
+    .\setup-machine.ps1 -ClientSecret "your-secret-here"
 #>
 
 param(
     [string]$TenantId = "5df6d88f-0d78-491b-9617-8b43a209ba73",
     [string]$ClientId = "1fcf6578-502c-4a18-a8e0-ac55f1ed133a",
     [string]$ServerUrl = "https://otel.andrewfaust.com",
-    [string]$CertSubject = "CN=client.copilottracker.andrewfaust.com",
-    [string]$TokenDir = "$env:USERPROFILE\.otel-token",
+    [string]$ClientSecret,
     [string]$ScriptDir = $PSScriptRoot
 )
 
 $ErrorActionPreference = "Stop"
 
 # ──────────────────────────────────────────────
-# Step 1: Find the certificate
+# Step 1: Get client secret
 # ──────────────────────────────────────────────
-Write-Host "`n=== Finding certificate ===" -ForegroundColor Cyan
-$cert = Get-ChildItem Cert:\CurrentUser\My |
-    Where-Object { $_.Subject -eq $CertSubject } |
-    Sort-Object NotAfter -Descending |
-    Select-Object -First 1
-
-if (-not $cert) {
-    throw "No certificate found with subject '$CertSubject' in Cert:\CurrentUser\My. Install the cert first."
+if (-not $ClientSecret) {
+    Write-Host "`n=== Client secret required ===" -ForegroundColor Cyan
+    Write-Host "  Get the secret from Azure Portal:"
+    Write-Host "  Entra ID > App registrations > OTel Ingest ($ClientId)"
+    Write-Host "  > Certificates & secrets > Client secrets"
+    $secureSecret = Read-Host -Prompt "  Enter client secret" -AsSecureString
+    $ClientSecret = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureSecret)
+    )
 }
 
-$CertThumbprint = $cert.Thumbprint
-Write-Host "  Found: $($cert.Subject)"
-Write-Host "  Thumbprint: $CertThumbprint"
-Write-Host "  Expires: $($cert.NotAfter.ToString('yyyy-MM-dd'))"
+if (-not $ClientSecret) {
+    throw "Client secret is required."
+}
 
 # ──────────────────────────────────────────────
-# Step 2: Acquire initial token
+# Step 2: Remove old scheduled task (if exists)
 # ──────────────────────────────────────────────
-Write-Host "`n=== Acquiring initial token ===" -ForegroundColor Cyan
-New-Item -ItemType Directory -Path $TokenDir -Force | Out-Null
-
-$refreshScript = Join-Path $ScriptDir "refresh-token.ps1"
-& $refreshScript -TenantId $TenantId -ClientId $ClientId -CertThumbprint $CertThumbprint -TokenFilePath "$TokenDir\token"
-
-# ──────────────────────────────────────────────
-# Step 3: Scheduled task for token refresh
-# ──────────────────────────────────────────────
-Write-Host "`n=== Installing scheduled task ===" -ForegroundColor Cyan
-$taskName = "CopilotOTelTokenRefresh"
-
-$action = New-ScheduledTaskAction `
-    -Execute "pwsh.exe" `
-    -Argument "-NoProfile -NonInteractive -File `"$refreshScript`" -TenantId `"$TenantId`" -ClientId `"$ClientId`" -CertThumbprint `"$CertThumbprint`" -TokenFilePath `"$TokenDir\token`""
-
-$trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 30) -Once -At (Get-Date)
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopOnIdleEnd
-
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
-Write-Host "  Scheduled task '$taskName' registered (runs every 30 minutes)."
+$oldTask = Get-ScheduledTask -TaskName "CopilotOTelTokenRefresh" -ErrorAction SilentlyContinue
+if ($oldTask) {
+    Write-Host "`n=== Removing old token refresh task ===" -ForegroundColor Yellow
+    Unregister-ScheduledTask -TaskName "CopilotOTelTokenRefresh" -Confirm:$false
+    Write-Host "  Removed scheduled task 'CopilotOTelTokenRefresh' (no longer needed)."
+}
 
 # ──────────────────────────────────────────────
-# Step 4: Start local OTel collector
+# Step 3: Start local OTel collector
 # ──────────────────────────────────────────────
 Write-Host "`n=== Starting local OTel collector ===" -ForegroundColor Cyan
 
 $envContent = @"
 SERVER_URL=$ServerUrl
-TOKEN_DIR=$($TokenDir -replace '\\','/')
+ENTRA_TENANT_ID=$TenantId
+ENTRA_CLIENT_ID=$ClientId
+ENTRA_CLIENT_SECRET=$ClientSecret
 "@
-$envContent | Set-Content (Join-Path $ScriptDir ".env")
+[System.IO.File]::WriteAllText((Join-Path $ScriptDir ".env"), $envContent)
 
 $collectorCompose = Join-Path $ScriptDir "docker-compose.yaml"
 docker compose -f $collectorCompose up -d
 
 # ──────────────────────────────────────────────
-# Step 5: Set persistent environment variables
+# Step 4: Set persistent environment variables
 # ──────────────────────────────────────────────
 Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 
@@ -118,10 +103,8 @@ Write-Host "  (Set as persistent User environment variables)"
 # Done
 # ──────────────────────────────────────────────
 Write-Host "`n=== Setup complete ===" -ForegroundColor Green
-Write-Host "  Certificate:  $($cert.Subject) ($CertThumbprint)"
-Write-Host "  Token file:   $TokenDir\token"
-Write-Host "  Token refresh: Every 30 minutes via scheduled task"
+Write-Host "  Auth:         oauth2client (automatic token refresh)"
 Write-Host "  Collector:    localhost:4317 (gRPC), localhost:4318 (HTTP)"
 Write-Host "  Forwarding:   $ServerUrl`:4318"
-Write-Host "`n  Copilot CLI will now emit telemetry automatically in new shells."
+Write-Host "`n  Copilot CLI and Claude Code will emit telemetry automatically in new shells."
 Write-Host "  (Restart your terminal for the env vars to take effect.)"

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { getTraceDetail } from "../api/client";
+import { useAuth } from "../auth/useAuth";
 import type { TraceDetail as TraceDetailType, ApiSpan, SpanNode } from "../api/types";
 import { formatDuration } from "../utils/format";
 
@@ -108,6 +109,7 @@ function SpanRow({
 
 export function TraceDetail() {
   const { sessionId, traceId } = useParams<{ sessionId: string; traceId: string }>();
+  const { getAccessToken } = useAuth();
   const [trace, setTrace] = useState<TraceDetailType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -115,10 +117,12 @@ export function TraceDetail() {
   useEffect(() => {
     if (!sessionId || !traceId) return;
     let mounted = true;
-    getTraceDetail(sessionId, traceId)
-      .then((d) => { if (mounted) setTrace(d); })
-      .catch((e) => { if (mounted) setError(e.message); })
-      .finally(() => { if (mounted) setLoading(false); });
+    getAccessToken().then((token) =>
+      getTraceDetail(sessionId, traceId, token)
+        .then((d) => { if (mounted) setTrace(d); })
+        .catch((e) => { if (mounted) setError(e.message); })
+        .finally(() => { if (mounted) setLoading(false); })
+    );
     return () => { mounted = false; };
   }, [sessionId, traceId]);
 

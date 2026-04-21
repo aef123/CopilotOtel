@@ -1,7 +1,7 @@
 import { PublicClientApplication, LogLevel } from "@azure/msal-browser";
 
-const clientId = import.meta.env.VITE_AZURE_CLIENT_ID || "";
-const tenantId = import.meta.env.VITE_AZURE_TENANT_ID || "";
+const clientId = import.meta.env.VITE_AZURE_CLIENT_ID || "d10a5d3c-eee5-41f8-8955-6c587b14bb70";
+const tenantId = import.meta.env.VITE_AZURE_TENANT_ID || "5df6d88f-0d78-491b-9617-8b43a209ba73";
 
 export const msalConfig = {
   auth: {
@@ -21,7 +21,7 @@ export const msalConfig = {
 };
 
 export const loginRequest = {
-  scopes: clientId ? [`api://${clientId}/Dashboard.Read`] : [],
+  scopes: ["openid", "profile", "email"],
 };
 
 export const msalInstance = new PublicClientApplication(msalConfig);

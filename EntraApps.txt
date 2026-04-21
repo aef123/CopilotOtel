@@ -1,0 +1,10 @@
+Copilot Otel Ingest
+Client ID: 1fcf6578-502c-4a18-a8e0-ac55f1ed133a
+Object ID: 6fb34637-e9b1-4752-8380-57032bd94903
+Tenant ID: 5df6d88f-0d78-491b-9617-8b43a209ba73
+
+Copilot Otel Grafana
+Client ID: d10a5d3c-eee5-41f8-8955-6c587b14bb70
+Object ID: 367d32b2-5159-4f7f-b11d-0e0e0f48d10f
+Tenant ID: 5df6d88f-0d78-491b-9617-8b43a209ba73
+Grafana Client Secret:

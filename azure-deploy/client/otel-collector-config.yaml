@@ -1,7 +1,11 @@
 extensions:
   health_check:
-  bearertokenauth:
-    filename: /etc/otel/token
+  oauth2client:
+    client_id: ${env:ENTRA_CLIENT_ID}
+    client_secret: ${env:ENTRA_CLIENT_SECRET}
+    token_url: https://login.microsoftonline.com/${env:ENTRA_TENANT_ID}/oauth2/v2.0/token
+    scopes:
+      - ${env:ENTRA_CLIENT_ID}/.default
 
 receivers:
   otlp:
@@ -15,7 +19,7 @@ exporters:
   otlphttp/remote:
     endpoint: ${env:SERVER_URL}:4318
     auth:
-      authenticator: bearertokenauth
+      authenticator: oauth2client
 
   debug:
     verbosity: basic
@@ -24,7 +28,7 @@ processors:
   batch:
 
 service:
-  extensions: [health_check, bearertokenauth]
+  extensions: [health_check, oauth2client]
   pipelines:
     traces:
       receivers: [otlp]

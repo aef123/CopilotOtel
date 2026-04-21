@@ -30,7 +30,7 @@ export function useAuth(): AuthReturn {
       await instance.loginRedirect(loginRequest);
     },
     logout: () => {
-      instance.logoutRedirect();
+      instance.logoutRedirect({ postLogoutRedirectUri: window.location.origin + "/dashboard/" });
     },
     getAccessToken: async () => {
       if (!account) return null;
@@ -39,7 +39,7 @@ export function useAuth(): AuthReturn {
           ...loginRequest,
           account,
         });
-        return resp.accessToken;
+        return resp.idToken;
       } catch {
         await instance.acquireTokenRedirect(loginRequest);
         return null;

@@ -73,8 +73,11 @@ def validate_jwt_basic(token):
     if EXPECTED_AUDIENCE and payload.get("aud") != EXPECTED_AUDIENCE:
         return False
     if TENANT_ID:
-        expected_iss = f"https://login.microsoftonline.com/{TENANT_ID}/v2.0"
-        if payload.get("iss") != expected_iss:
+        expected_issuers = [
+            f"https://login.microsoftonline.com/{TENANT_ID}/v2.0",
+            f"https://sts.windows.net/{TENANT_ID}/",
+        ]
+        if payload.get("iss") not in expected_issuers:
             return False
     # Full signature validation with PyJWT if available
     try:
@@ -88,7 +91,7 @@ def validate_jwt_basic(token):
             signing_key.key,
             algorithms=["RS256"],
             audience=EXPECTED_AUDIENCE,
-            issuer=f"https://login.microsoftonline.com/{TENANT_ID}/v2.0",
+            options={"verify_iss": False},
         )
     except ImportError:
         pass  # PyJWT not installed, basic checks above are sufficient for dev
@@ -487,7 +490,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
             return
 
-        # --- Dashboard API routes ---
+        # --- Dashboard API routes (auth required) ---
+        if path.startswith("/dashboard-api"):
+            token = self._get_bearer_token()
+            if not validate_jwt_basic(token):
+                return self._error(401, "Authentication required")
+
+        # --- Legacy API routes (auth required) ---
+        if path.startswith("/api/"):
+            token = self._get_bearer_token()
+            if not validate_jwt_basic(token):
+                return self._error(401, "Authentication required")
 
         # Session list (also used by Grafana Infinity datasource at /api/sessions)
         if path in ("/api/sessions", "/dashboard-api/sessions"):

@@ -4,24 +4,28 @@ import {
   ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell, Legend,
 } from "recharts";
 import { getTokenUsage, getModelUsage, getToolUsage } from "../api/client";
+import { useAuth } from "../auth/useAuth";
 import type { TokenUsagePoint, ModelUsage, ToolUsage } from "../api/types";
 
 const COLORS = ["#a855f7", "#4ade80", "#facc15", "#f87171", "#58a6ff", "#c084fc", "#06d6a0"];
 
 export function ChartsDashboard() {
+  const { getAccessToken } = useAuth();
   const [tokenData, setTokenData] = useState<TokenUsagePoint[]>([]);
   const [modelData, setModelData] = useState<ModelUsage[]>([]);
   const [toolData, setToolData] = useState<ToolUsage[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([getTokenUsage(), getModelUsage(), getToolUsage()])
-      .then(([t, m, tl]) => {
-        setTokenData(t);
-        setModelData(m);
-        setToolData(tl);
-      })
-      .finally(() => setLoading(false));
+    getAccessToken().then((token) =>
+      Promise.all([getTokenUsage(token), getModelUsage(token), getToolUsage(token)])
+        .then(([t, m, tl]) => {
+          setTokenData(t);
+          setModelData(m);
+          setToolData(tl);
+        })
+        .finally(() => setLoading(false))
+    );
   }, []);
 
   if (loading) return <div className="loading">Loading charts...</div>;

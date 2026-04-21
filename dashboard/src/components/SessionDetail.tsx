@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { getSessionDetail } from "../api/client";
+import { useAuth } from "../auth/useAuth";
 import type { SessionDetail as SessionDetailType } from "../api/types";
 import { formatDuration, formatTokens, formatTime } from "../utils/format";
 
@@ -11,6 +12,7 @@ const GRAFANA_BASE = window.location.port === "8888"
 export function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const nav = useNavigate();
+  const { getAccessToken } = useAuth();
   const [detail, setDetail] = useState<SessionDetailType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -18,8 +20,9 @@ export function SessionDetail() {
   useEffect(() => {
     if (!sessionId) return;
     let mounted = true;
-    const load = () => {
-      getSessionDetail(sessionId)
+    const load = async () => {
+      const token = await getAccessToken();
+      getSessionDetail(sessionId, token)
         .then((d) => { if (mounted) setDetail(d); })
         .catch((e) => { if (mounted) setError(e.message); })
         .finally(() => { if (mounted) setLoading(false); });

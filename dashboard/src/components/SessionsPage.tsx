@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { getSessions } from "../api/client";
+import { useAuth } from "../auth/useAuth";
 import type { Session } from "../api/types";
 import { SessionGrid } from "./SessionGrid";
 import { SessionList } from "./SessionList";
@@ -7,6 +8,7 @@ import { SessionList } from "./SessionList";
 type ViewMode = "grid" | "list";
 
 export function SessionsPage() {
+  const { getAccessToken } = useAuth();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -18,7 +20,8 @@ export function SessionsPage() {
     let mounted = true;
     const load = async () => {
       try {
-        const data = await getSessions();
+        const token = await getAccessToken();
+        const data = await getSessions(token);
         if (mounted) setSessions(data);
       } catch (e: any) {
         if (mounted) setError(e.message);
