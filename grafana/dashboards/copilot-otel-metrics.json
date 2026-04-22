@@ -1,0 +1,341 @@
+{
+  "uid": "copilot-otel-metrics",
+  "title": "Copilot OTel Metrics",
+  "tags": ["copilot", "otel", "metrics"],
+  "timezone": "browser",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(gen_ai_client_token_usage_count, gen_ai_response_model)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "model",
+        "query": { "query": "label_values(gen_ai_client_token_usage_count, gen_ai_response_model)" },
+        "refresh": 2,
+        "regex": "",
+        "type": "query",
+        "label": "Model"
+      },
+      {
+        "current": { "selected": false, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(gen_ai_client_token_usage_count, gen_ai_conversation_id)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "session",
+        "query": { "query": "label_values(gen_ai_client_token_usage_count, gen_ai_conversation_id)" },
+        "refresh": 2,
+        "regex": "",
+        "type": "query",
+        "label": "Session"
+      },
+      {
+        "current": { "selected": false, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(gen_ai_client_token_usage_count, service_name)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "source",
+        "query": { "query": "label_values(gen_ai_client_token_usage_count, service_name)" },
+        "refresh": 2,
+        "regex": "",
+        "type": "query",
+        "label": "Source"
+      },
+      {
+        "current": { "selected": true, "text": "gen_ai_response_model", "value": "gen_ai_response_model" },
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "name": "split_by",
+        "options": [
+          { "selected": true, "text": "gen_ai_response_model", "value": "gen_ai_response_model" },
+          { "selected": false, "text": "gen_ai_conversation_id", "value": "gen_ai_conversation_id" },
+          { "selected": false, "text": "gen_ai_token_type", "value": "gen_ai_token_type" },
+          { "selected": false, "text": "service_name", "value": "service_name" },
+          { "selected": false, "text": "host_name", "value": "host_name" }
+        ],
+        "type": "custom",
+        "label": "Split By"
+      }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["10s", "30s", "1m", "5m"],
+    "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d"]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Token Usage Rate",
+      "description": "Rate of token consumption over time, split by selected dimension",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by ($split_by) (rate(gen_ai_client_token_usage_count{gen_ai_response_model=~\"$model\", gen_ai_conversation_id=~\"$session\", service_name=~\"$source\"}[$__rate_interval]))",
+          "legendFormat": "{{$split_by}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "pointSize": 5, "showPoints": "auto" },
+          "unit": "short"
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "mean"] } }
+    },
+    {
+      "id": 2,
+      "title": "Token Usage (Cumulative)",
+      "description": "Total tokens consumed over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (gen_ai_token_type) (increase(gen_ai_client_token_usage_count{gen_ai_response_model=~\"$model\", gen_ai_conversation_id=~\"$session\", service_name=~\"$source\"}[$__rate_interval]))",
+          "legendFormat": "{{gen_ai_token_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 50, "stacking": { "mode": "normal" } },
+          "unit": "short"
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 3,
+      "title": "Operation Duration (p50 / p95 / p99)",
+      "description": "Latency percentiles for AI operations",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(gen_ai_client_operation_duration_bucket{gen_ai_response_model=~\"$model\", gen_ai_conversation_id=~\"$session\", service_name=~\"$source\"}[$__rate_interval])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(gen_ai_client_operation_duration_bucket{gen_ai_response_model=~\"$model\", gen_ai_conversation_id=~\"$session\", service_name=~\"$source\"}[$__rate_interval])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gen_ai_client_operation_duration_bucket{gen_ai_response_model=~\"$model\", gen_ai_conversation_id=~\"$session\", service_name=~\"$source\"}[$__rate_interval])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5 },
+          "unit": "s"
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 4,
+      "title": "Operation Duration by Model",
+      "description": "Average operation duration split by model",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (gen_ai_response_model) (rate(gen_ai_client_operation_duration_sum{gen_ai_response_model=~\"$model\", service_name=~\"$source\"}[$__rate_interval])) / sum by (gen_ai_response_model) (rate(gen_ai_client_operation_duration_count{gen_ai_response_model=~\"$model\", service_name=~\"$source\"}[$__rate_interval]))",
+          "legendFormat": "{{gen_ai_response_model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "s"
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 5,
+      "title": "Tool Call Rate",
+      "description": "Rate of tool invocations over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (gen_ai_tool_name) (rate(github_copilot_tool_call_count{gen_ai_conversation_id=~\"$session\", service_name=~\"$source\"}[$__rate_interval]))",
+          "legendFormat": "{{gen_ai_tool_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 50, "stacking": { "mode": "normal" } },
+          "unit": "ops"
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] } }
+    },
+    {
+      "id": 6,
+      "title": "Total Tokens by Model",
+      "description": "Cumulative token usage broken down by model",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (gen_ai_response_model) (gen_ai_client_token_usage_count{gen_ai_response_model=~\"$model\", service_name=~\"$source\"})",
+          "legendFormat": "{{gen_ai_response_model}}"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "legend": { "displayMode": "table", "placement": "right" }, "pieType": "donut" }
+    },
+    {
+      "id": 7,
+      "title": "Top Tools (Total Calls)",
+      "description": "Most frequently used tools",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(15, sum by (gen_ai_tool_name) (github_copilot_tool_call_count{service_name=~\"$source\"}))",
+          "legendFormat": "{{gen_ai_tool_name}}"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "horizontal", "displayMode": "gradient" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 8,
+      "title": "Active Sessions",
+      "description": "Number of sessions reporting metrics recently",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(count by (gen_ai_conversation_id) (rate(gen_ai_client_token_usage_count{service_name=~\"$source\"}[5m]) > 0))",
+          "legendFormat": "Active"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 10 }] } } }
+    },
+    {
+      "id": 9,
+      "title": "Total Turns",
+      "description": "Total number of AI invocations",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(gen_ai_client_operation_duration_count{service_name=~\"$source\"})",
+          "legendFormat": "Turns"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "purple", "mode": "fixed" } } }
+    },
+    {
+      "id": 10,
+      "title": "Tokens by Session",
+      "description": "Token consumption per session",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (gen_ai_conversation_id) (rate(gen_ai_client_token_usage_count{gen_ai_response_model=~\"$model\", gen_ai_conversation_id=~\"$session\", service_name=~\"$source\"}[$__rate_interval]))",
+          "legendFormat": "{{gen_ai_conversation_id}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 15 },
+          "unit": "short"
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] } }
+    },
+    {
+      "id": 11,
+      "title": "Operations by Type",
+      "description": "Operation rate split by operation name",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (gen_ai_operation_name) (rate(gen_ai_client_operation_duration_count{gen_ai_response_model=~\"$model\", service_name=~\"$source\"}[$__rate_interval]))",
+          "legendFormat": "{{gen_ai_operation_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "ops"
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 12,
+      "title": "Token Usage by Source",
+      "description": "Token consumption split by service (Copilot vs Claude)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 16, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service_name) (rate(gen_ai_client_token_usage_count{gen_ai_response_model=~\"$model\", service_name=~\"$source\"}[$__rate_interval]))",
+          "legendFormat": "{{service_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 50, "stacking": { "mode": "normal" } },
+          "unit": "short"
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } }
+    }
+  ]
+}

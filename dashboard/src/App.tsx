@@ -5,7 +5,7 @@ import { SessionsPage } from "./components/SessionsPage";
 import { SessionDetail } from "./components/SessionDetail";
 import { TraceDetail } from "./components/TraceDetail";
 import { ChartsDashboard } from "./components/ChartsDashboard";
-import { HealthDashboard } from "./components/HealthDashboard";
+import { DebugPage } from "./components/DebugPage";
 
 export function App() {
   return (
@@ -17,7 +17,7 @@ export function App() {
             <Route path="sessions/:sessionId" element={<SessionDetail />} />
             <Route path="sessions/:sessionId/traces/:traceId" element={<TraceDetail />} />
             <Route path="charts" element={<ChartsDashboard />} />
-            <Route path="health" element={<HealthDashboard />} />
+            <Route path="debug" element={<DebugPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

@@ -46,7 +46,7 @@ services:
     environment:
       - TEMPO_URL=http://tempo:3200
       - PROMETHEUS_URL=http://prometheus:9090
-      - LOOKBACK_HOURS=6
+      - LOOKBACK_HOURS=24
       - SKIP_AUTH=true
     depends_on:
       - tempo
@@ -56,6 +56,8 @@ services:
     image: grafana/grafana:latest
     volumes:
       - ./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - ./grafana/dashboards/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml
+      - ./grafana/dashboards/copilot-otel-metrics.json:/var/lib/grafana/dashboards/copilot-otel-metrics.json
       - grafana-data:/var/lib/grafana
     ports:
       - "3000:3000"

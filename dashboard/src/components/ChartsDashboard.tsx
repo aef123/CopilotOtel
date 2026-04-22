@@ -3,11 +3,16 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell, Legend,
 } from "recharts";
-import { getTokenUsage, getModelUsage, getToolUsage } from "../api/client";
+import { getTokenUsage, getModelUsage, getToolUsage, getLookback, setLookback, LOOKBACK_OPTIONS } from "../api/client";
+import type { LookbackWindow } from "../api/client";
 import { useAuth } from "../auth/useAuth";
 import type { TokenUsagePoint, ModelUsage, ToolUsage } from "../api/types";
 
 const COLORS = ["#a855f7", "#4ade80", "#facc15", "#f87171", "#58a6ff", "#c084fc", "#06d6a0"];
+
+const GRAFANA_BASE = window.location.port === "8888"
+  ? "http://localhost:3000"
+  : window.location.origin;
 
 export function ChartsDashboard() {
   const { getAccessToken } = useAuth();
@@ -15,10 +20,16 @@ export function ChartsDashboard() {
   const [modelData, setModelData] = useState<ModelUsage[]>([]);
   const [toolData, setToolData] = useState<ToolUsage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [lookback, setLookbackState] = useState<LookbackWindow>(getLookback);
 
   useEffect(() => {
+    setLoading(true);
     getAccessToken().then((token) =>
-      Promise.all([getTokenUsage(token), getModelUsage(token), getToolUsage(token)])
+      Promise.all([
+        getTokenUsage(token, lookback),
+        getModelUsage(token, lookback),
+        getToolUsage(token, lookback),
+      ])
         .then(([t, m, tl]) => {
           setTokenData(t);
           setModelData(m);
@@ -26,7 +37,12 @@ export function ChartsDashboard() {
         })
         .finally(() => setLoading(false))
     );
-  }, []);
+  }, [lookback]);
+
+  const handleLookback = (v: LookbackWindow) => {
+    setLookbackState(v);
+    setLookback(v);
+  };
 
   if (loading) return <div className="loading">Loading charts...</div>;
 
@@ -36,9 +52,27 @@ export function ChartsDashboard() {
   const accent = style.getPropertyValue("--accent").trim() || "#a855f7";
   const green = style.getPropertyValue("--green").trim() || "#4ade80";
 
+  const grafanaDashboardUrl = `${GRAFANA_BASE}/d/copilot-otel-metrics/copilot-otel-metrics`;
+
   return (
     <>
-      <h2>Charts</h2>
+      <div className="filters">
+        <h2 style={{ margin: 0 }}>Charts</h2>
+        <select value={lookback} onChange={(e) => handleLookback(e.target.value as LookbackWindow)}>
+          {LOOKBACK_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        <a
+          href={grafanaDashboardUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn-primary"
+          style={{ marginLeft: "auto", textDecoration: "none" }}
+        >
+          Show in Grafana
+        </a>
+      </div>
 
       <div className="charts-row-full">
         <div className="chart-card">

@@ -54,6 +54,8 @@ services:
     image: grafana/grafana:latest
     volumes:
       - ./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - ./grafana/dashboards/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml
+      - ./grafana/dashboards/copilot-otel-metrics.json:/var/lib/grafana/dashboards/copilot-otel-metrics.json
       - grafana-data:/var/lib/grafana
     environment:
       - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
@@ -85,8 +87,8 @@ services:
     environment:
       - TEMPO_URL=http://tempo:3200
       - PROMETHEUS_URL=http://prometheus:9090
-      - LOOKBACK_HOURS=${LOOKBACK_HOURS:-6}
-      - IDLE_GRACE_SECONDS=${IDLE_GRACE_SECONDS:-60}
+      - LOOKBACK_HOURS=${LOOKBACK_HOURS:-24}
+      - IDLE_TIMEOUT_SECONDS=${IDLE_TIMEOUT_SECONDS:-300}
       - TENANT_ID=${TENANT_ID}
       - EXPECTED_AUDIENCE=${GRAFANA_CLIENT_ID}
     restart: unless-stopped

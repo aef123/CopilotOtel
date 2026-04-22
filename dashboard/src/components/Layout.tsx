@@ -24,8 +24,8 @@ export function Layout() {
           <NavLink to="/charts" className={({ isActive }) => isActive ? "active" : ""}>
             Charts
           </NavLink>
-          <NavLink to="/health" className={({ isActive }) => isActive ? "active" : ""}>
-            Health
+          <NavLink to="/debug" className={({ isActive }) => isActive ? "active" : ""}>
+            Debug
           </NavLink>
         </nav>
         <div className="layout-user">

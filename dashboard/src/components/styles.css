@@ -257,19 +257,29 @@
 }
 
 .badge-source-copilot {
-  color: #58a6ff;
+  color: #fff;
+  background: #1f6feb;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .badge-source-copilot::before {
-  background: #58a6ff;
+  content: none;
 }
 
 .badge-source-claude {
-  color: #c084fc;
+  color: #fff;
+  background: #9333ea;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .badge-source-claude::before {
-  background: #c084fc;
+  content: none;
 }
 
 /* ========== Filters ========== */
@@ -455,6 +465,10 @@
 
 .session-card-active {
   border-left: 3px solid var(--green);
+}
+
+.session-card-responding {
+  border-left: 3px solid var(--accent);
 }
 
 .session-card-header {

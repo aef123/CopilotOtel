@@ -14,7 +14,7 @@ export function SessionGrid({ sessions }: { sessions: Session[] }) {
       {sessions.map((s) => (
         <div
           key={s.sessionId}
-          className={`session-card ${s.status === "Active" ? "session-card-active" : ""}`}
+          className={`session-card ${s.status === "Active" ? "session-card-active" : ""} ${s.status === "Responding" ? "session-card-responding" : ""}`}
           onClick={() => nav(`/sessions/${s.sessionId}`)}
         >
           <div className="session-card-header">

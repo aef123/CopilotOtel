@@ -78,6 +78,7 @@ Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 
 # Shared OTel variables (used by both Copilot CLI and Claude Code)
 [Environment]::SetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318", "User")
+[Environment]::SetEnvironmentVariable("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf", "User")
 [Environment]::SetEnvironmentVariable("OTEL_RESOURCE_ATTRIBUTES", "host.name=$env:COMPUTERNAME", "User")
 
 # Claude Code specific
@@ -87,12 +88,14 @@ Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 
 # Also set in current session
 $env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318"
+$env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
 $env:OTEL_RESOURCE_ATTRIBUTES = "host.name=$env:COMPUTERNAME"
 $env:CLAUDE_CODE_ENABLE_TELEMETRY = "1"
 $env:OTEL_METRICS_EXPORTER = "otlp"
 $env:OTEL_LOGS_EXPORTER = "otlp"
 
 Write-Host "  OTEL_EXPORTER_OTLP_ENDPOINT  = http://localhost:4318"
+Write-Host "  OTEL_EXPORTER_OTLP_PROTOCOL  = http/protobuf"
 Write-Host "  OTEL_RESOURCE_ATTRIBUTES     = host.name=$env:COMPUTERNAME"
 Write-Host "  CLAUDE_CODE_ENABLE_TELEMETRY = 1"
 Write-Host "  OTEL_METRICS_EXPORTER        = otlp"

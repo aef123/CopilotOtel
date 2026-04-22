@@ -17,11 +17,22 @@ from collections import defaultdict
 
 TEMPO_URL = os.environ.get("TEMPO_URL", "http://tempo:3200")
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
-LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "6"))
-IDLE_GRACE_SECONDS = int(os.environ.get("IDLE_GRACE_SECONDS", "60"))
+LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "24"))
+IDLE_TIMEOUT_SECONDS = int(os.environ.get("IDLE_TIMEOUT_SECONDS", "300"))  # 5 minutes
 SKIP_AUTH = os.environ.get("SKIP_AUTH", "false").lower() == "true"
 TENANT_ID = os.environ.get("TENANT_ID", "")
 EXPECTED_AUDIENCE = os.environ.get("EXPECTED_AUDIENCE", "")
+
+LOOKBACK_MAP = {
+    "6h": 6, "12h": 12, "24h": 24, "2d": 48, "7d": 168,
+}
+
+
+def parse_lookback(qs):
+    """Parse ?lookback=6h|12h|24h|2d|7d from query string, return hours."""
+    params = urllib.parse.parse_qs(qs)
+    val = params.get("lookback", [""])[0]
+    return LOOKBACK_MAP.get(val, LOOKBACK_HOURS)
 
 # JWKS cache
 _jwks_cache = {"keys": [], "fetched_at": 0}
@@ -104,9 +115,10 @@ def validate_jwt_basic(token):
 # Tempo helpers
 # ---------------------------------------------------------------------------
 
-def query_tempo(traceql, limit=500):
+def query_tempo(traceql, limit=500, lookback_hours=None):
+    lh = lookback_hours or LOOKBACK_HOURS
     now = int(time.time())
-    start = now - (LOOKBACK_HOURS * 3600)
+    start = now - (lh * 3600)
     q = urllib.parse.quote(traceql)
     url = f"{TEMPO_URL}/api/search?q={q}&limit={limit}&start={start}&end={now}"
     resp = urllib.request.urlopen(urllib.request.Request(url), timeout=15)
@@ -159,23 +171,65 @@ def query_prometheus_range(promql, start, end, step="60s"):
 # Session computation (enriched)
 # ---------------------------------------------------------------------------
 
-def compute_sessions():
-    # Query both Copilot and Claude sessions
+def query_recent_metric_activity():
+    """Query Prometheus for sessions with actual metric changes in last 2 min.
+    Uses increase() to detect real activity, not just stale cumulative counters.
+    Returns a dict: session_id -> now_ms (if active)."""
+    now_ms = int(time.time() * 1000)
+    active = {}
+    # Try multiple metric names — Copilot and Claude emit different ones
+    metric_queries = [
+        'increase(gen_ai_client_token_usage_count{gen_ai_conversation_id!=""}[2m])',
+        'increase(gen_ai_client_operation_duration_count{gen_ai_conversation_id!=""}[2m])',
+        'increase(github_copilot_tool_call_count_total{gen_ai_conversation_id!=""}[2m])',
+    ]
+    for promql in metric_queries:
+        try:
+            result = query_prometheus(f'max by (gen_ai_conversation_id) ({promql})')
+            for s in result.get("data", {}).get("result", []):
+                sid = s["metric"].get("gen_ai_conversation_id", "")
+                val = float(s["value"][1])
+                if sid and val > 0:
+                    active[sid] = now_ms
+        except Exception:
+            pass
+    return active
+
+
+def compute_sessions(lookback_hours=None):
+    lh = lookback_hours or LOOKBACK_HOURS
+    # Query both Copilot and Claude root spans (invoke_agent)
     copilot_data = query_tempo(
         '{resource.service.name="github-copilot" && name="invoke_agent"}'
         ' | select(span.gen_ai.conversation.id, span.gen_ai.agent.version,'
         ' span.gen_ai.response.model, span.gen_ai.usage.input_tokens,'
-        ' span.gen_ai.usage.output_tokens, resource.host.name)'
+        ' span.gen_ai.usage.output_tokens, resource.host.name)',
+        lookback_hours=lh,
     )
     claude_data = query_tempo(
-        '{resource.service.name=~"claude.*" && name=~".*"}'
+        '{resource.service.name=~"claude.*"}'
         ' | select(span.gen_ai.conversation.id, span.gen_ai.response.model,'
         ' span.gen_ai.usage.input_tokens, span.gen_ai.usage.output_tokens,'
-        ' resource.host.name, resource.service.name)'
+        ' resource.host.name, resource.service.name)',
+        lookback_hours=lh,
+    )
+    # Chat spans carry the model name (invoke_agent often doesn't)
+    chat_data = query_tempo(
+        '{resource.service.name=~"github-copilot|claude.*" && name=~"chat.*"}'
+        ' | select(span.gen_ai.conversation.id, span.gen_ai.response.model)',
+        lookback_hours=lh,
     )
     children_data = query_tempo(
-        '{resource.service.name="github-copilot" && name!="invoke_agent"'
-        ' && name!="permission"} | select(span.gen_ai.conversation.id)'
+        '{resource.service.name=~"github-copilot|claude.*" && name!="invoke_agent"'
+        ' && name!="permission"} | select(span.gen_ai.conversation.id)',
+        lookback_hours=lh,
+    )
+    # Short-lookback query for recent activity (catches in-progress turns)
+    recent_children = query_tempo(
+        '{resource.service.name=~"github-copilot|claude.*" && name!="invoke_agent"'
+        ' && name!="permission"} | select(span.gen_ai.conversation.id)',
+        lookback_hours=min(lh, 1),
+        limit=200,
     )
 
     sessions = defaultdict(lambda: {
@@ -232,35 +286,120 @@ def compute_sessions():
     process_spans(copilot_data, "Copilot")
     process_spans(claude_data, "Claude")
 
-    for trace in children_data.get("traces", []):
+    # Build trace_id -> session_id map from invoke_agent spans
+    trace_to_session = {}
+    for sid, rec in sessions.items():
+        for tid in rec["trace_ids"]:
+            trace_to_session[tid] = sid
+
+    # Also build trace_id -> session_id from chat spans (chat spans complete
+    # quickly and may carry gen_ai.conversation.id even during in-progress turns)
+    for trace in chat_data.get("traces", []):
+        trace_id = trace.get("traceID", "")
         for ss in trace.get("spanSets", []):
             for span in ss.get("spans", []):
                 sid = get_attr(span, "gen_ai.conversation.id")
-                if not sid:
-                    continue
-                t = int(span["startTimeUnixNano"]) // 1_000_000
-                dur = int(span.get("durationNanos", 0))
-                end_t = t + dur // 1_000_000
-                children_max[sid] = max(children_max[sid], end_t)
+                model = get_attr(span, "gen_ai.response.model")
+                if sid and trace_id:
+                    trace_to_session[trace_id] = sid
+                if sid and model and sid in sessions and not sessions[sid]["model"]:
+                    sessions[sid]["model"] = model
+
+    def _process_children(data):
+        """Extract latest child span end-time per session using trace_id fallback."""
+        unmatched_traces = set()
+        for trace in data.get("traces", []):
+            trace_id = trace.get("traceID", "")
+            for ss in trace.get("spanSets", []):
+                for span in ss.get("spans", []):
+                    sid = get_attr(span, "gen_ai.conversation.id")
+                    if not sid:
+                        sid = trace_to_session.get(trace_id)
+                    if not sid:
+                        if trace_id:
+                            unmatched_traces.add(trace_id)
+                        continue
+                    # Update mapping for future lookups
+                    if trace_id and trace_id not in trace_to_session:
+                        trace_to_session[trace_id] = sid
+                    t = int(span["startTimeUnixNano"]) // 1_000_000
+                    dur = int(span.get("durationNanos", 0))
+                    end_t = t + dur // 1_000_000
+                    children_max[sid] = max(children_max[sid], end_t)
+        return unmatched_traces
+
+    _process_children(children_data)
+    unmatched = _process_children(recent_children)
+
+    # For unmatched recent traces, fetch the full trace to find session_id
+    # (handles in-progress turns where invoke_agent hasn't landed in Tempo yet)
+    resolved = 0
+    for tid in sorted(unmatched)[:5]:  # cap at 5 fetches
+        try:
+            trace_data = get_trace(tid)
+            found_sid = None
+            for batch in trace_data.get("batches", []):
+                for scope in batch.get("scopeSpans", batch.get("instrumentationLibrarySpans", [])):
+                    for span in scope.get("spans", []):
+                        for attr in span.get("attributes", []):
+                            if attr.get("key") == "gen_ai.conversation.id":
+                                v = attr.get("value", {})
+                                found_sid = v.get("stringValue", "")
+                                break
+                        if found_sid:
+                            break
+                if found_sid:
+                    break
+            if found_sid:
+                trace_to_session[tid] = found_sid
+                resolved += 1
+                # Re-scan recent_children for this trace
+                for trace in recent_children.get("traces", []):
+                    if trace.get("traceID") == tid:
+                        for ss in trace.get("spanSets", []):
+                            for span in ss.get("spans", []):
+                                t = int(span["startTimeUnixNano"]) // 1_000_000
+                                dur = int(span.get("durationNanos", 0))
+                                end_t = t + dur // 1_000_000
+                                children_max[found_sid] = max(
+                                    children_max[found_sid], end_t)
+        except Exception:
+            pass
 
     all_ids = set(list(sessions.keys()) + list(children_max.keys()))
+    # Query Prometheus for recent metric activity to detect responding state
+    try:
+        metric_activity = query_recent_metric_activity()
+    except Exception:
+        metric_activity = {}
+
     rows = []
+    now_ms = int(time.time() * 1000)
     for sid in all_ids:
         c = sessions.get(sid)
         c_time = c["max_time"] if c else 0
         a_time = children_max.get(sid, 0)
-        last_activity = max(c_time, a_time)
-        now_ms = int(time.time() * 1000)
+        metric_time = metric_activity.get(sid, 0)
+        last_activity = max(c_time, a_time, metric_time)
         age_s = (now_ms - last_activity) / 1000 if last_activity > 0 else float("inf")
 
-        if a_time > c_time and a_time > 0:
+        # Adaptive idle threshold: if the last turn was long (autopilot),
+        # allow up to last_turn_duration before marking idle.
+        last_turn_s = c["duration_ns"] / 1e9 if c else 0
+        idle_threshold = max(IDLE_TIMEOUT_SECONDS, last_turn_s)
+
+        # Responding: metrics show real activity (increase > 0) in last 2 min
+        if metric_time > 0:
+            status = "Responding"
+        elif age_s < IDLE_TIMEOUT_SECONDS:
             status = "Active"
-        elif last_activity > 0 and age_s < IDLE_GRACE_SECONDS:
+        elif age_s < idle_threshold:
+            # Within expected turn duration - likely mid-turn in autopilot
             status = "Active"
-        elif c_time > 0:
+        elif last_activity > 0:
             status = "Idle"
         else:
-            status = "Unknown"
+            status = "Idle"
 
         rows.append({
             "session_id": sid,
@@ -286,48 +425,80 @@ def compute_sessions():
 # ---------------------------------------------------------------------------
 
 def get_session_detail(session_id):
-    data = query_tempo(
+    # Query both Copilot and Claude root spans for this session
+    copilot_turns = query_tempo(
         '{resource.service.name="github-copilot" && name="invoke_agent"'
         f' && span.gen_ai.conversation.id="{session_id}"}}'
         ' | select(span.gen_ai.response.model, span.gen_ai.usage.input_tokens,'
         ' span.gen_ai.usage.output_tokens, span.gen_ai.agent.version,'
         ' resource.host.name)'
     )
-    turns = []
-    host = ""
-    version = ""
-    for trace in data.get("traces", []):
+    claude_turns = query_tempo(
+        '{resource.service.name=~"claude.*"'
+        f' && span.gen_ai.conversation.id="{session_id}"}}'
+        ' | select(span.gen_ai.response.model, span.gen_ai.usage.input_tokens,'
+        ' span.gen_ai.usage.output_tokens, resource.host.name,'
+        ' resource.service.name)'
+    )
+    # Chat spans carry the model (invoke_agent often doesn't)
+    chat_spans = query_tempo(
+        '{resource.service.name=~"github-copilot|claude.*" && name=~"chat.*"'
+        f' && span.gen_ai.conversation.id="{session_id}"}}'
+        ' | select(span.gen_ai.response.model)'
+    )
+    # Build trace_id -> model map from chat spans
+    trace_models = {}
+    for trace in chat_spans.get("traces", []):
         trace_id = trace.get("traceID", "")
         for ss in trace.get("spanSets", []):
             for span in ss.get("spans", []):
-                start_ns = int(span["startTimeUnixNano"])
-                dur_ns = int(span.get("durationNanos", 0))
-                model = get_attr(span, "gen_ai.response.model") or ""
-                inp = 0
-                out = 0
-                try:
-                    inp = int(get_attr(span, "gen_ai.usage.input_tokens") or 0)
-                except (ValueError, TypeError):
-                    pass
-                try:
-                    out = int(get_attr(span, "gen_ai.usage.output_tokens") or 0)
-                except (ValueError, TypeError):
-                    pass
-                h = get_attr(span, "host.name")
-                if h:
-                    host = h
-                v = get_attr(span, "gen_ai.agent.version")
-                if v:
-                    version = v
-                turns.append({
-                    "trace_id": trace_id,
-                    "span_id": span.get("spanID", ""),
-                    "start_time": start_ns // 1_000_000,
-                    "duration_s": round(dur_ns / 1e9, 1),
-                    "model": model,
-                    "input_tokens": inp,
-                    "output_tokens": out,
-                })
+                model = get_attr(span, "gen_ai.response.model")
+                if model and trace_id:
+                    trace_models[trace_id] = model
+
+    turns = []
+    host = ""
+    version = ""
+
+    def extract_turns(data):
+        nonlocal host, version
+        for trace in data.get("traces", []):
+            trace_id = trace.get("traceID", "")
+            for ss in trace.get("spanSets", []):
+                for span in ss.get("spans", []):
+                    start_ns = int(span["startTimeUnixNano"])
+                    dur_ns = int(span.get("durationNanos", 0))
+                    model = get_attr(span, "gen_ai.response.model") or ""
+                    if not model:
+                        model = trace_models.get(trace_id, "")
+                    inp = 0
+                    out = 0
+                    try:
+                        inp = int(get_attr(span, "gen_ai.usage.input_tokens") or 0)
+                    except (ValueError, TypeError):
+                        pass
+                    try:
+                        out = int(get_attr(span, "gen_ai.usage.output_tokens") or 0)
+                    except (ValueError, TypeError):
+                        pass
+                    h = get_attr(span, "host.name")
+                    if h:
+                        host = h
+                    v = get_attr(span, "gen_ai.agent.version")
+                    if v:
+                        version = v
+                    turns.append({
+                        "trace_id": trace_id,
+                        "span_id": span.get("spanID", ""),
+                        "start_time": start_ns // 1_000_000,
+                        "duration_s": round(dur_ns / 1e9, 1),
+                        "model": model,
+                        "input_tokens": inp,
+                        "output_tokens": out,
+                    })
+
+    extract_turns(copilot_turns)
+    extract_turns(claude_turns)
     turns.sort(key=lambda t: t["start_time"])
     return {
         "session_id": session_id,
@@ -381,9 +552,10 @@ def get_trace_detail(trace_id):
 # Metrics endpoints (shaped Prometheus data)
 # ---------------------------------------------------------------------------
 
-def get_metrics_token_usage():
+def get_metrics_token_usage(lookback_hours=None):
+    lh = lookback_hours or LOOKBACK_HOURS
     now = int(time.time())
-    start = now - (LOOKBACK_HOURS * 3600)
+    start = now - (lh * 3600)
     result = query_prometheus_range(
         'sum by (gen_ai_token_type) (rate(gen_ai_client_token_usage_count[5m]))',
         start, now, "60s"
@@ -401,9 +573,10 @@ def get_metrics_token_usage():
     return sorted(points.values(), key=lambda p: p["timestamp"])
 
 
-def get_metrics_operations():
+def get_metrics_operations(lookback_hours=None):
+    lh = lookback_hours or LOOKBACK_HOURS
     now = int(time.time())
-    start = now - (LOOKBACK_HOURS * 3600)
+    start = now - (lh * 3600)
     result = query_prometheus_range(
         'sum by (gen_ai_operation_name) (rate(gen_ai_client_operation_duration_count[5m]))',
         start, now, "60s"
@@ -439,8 +612,8 @@ def get_metrics_tools():
     return items
 
 
-def get_health_summary():
-    sessions = compute_sessions()
+def get_health_summary(lookback_hours=None):
+    sessions = compute_sessions(lookback_hours)
     active = sum(1 for s in sessions if s["status"] == "Active")
     idle = sum(1 for s in sessions if s["status"] == "Idle")
     total_turns = sum(s["turns"] for s in sessions)
@@ -489,7 +662,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        path = self.path.split("?")[0].rstrip("/")
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        qs = parsed.query
+        lookback_hours = parse_lookback(qs)
 
         # Health check (no auth)
         if path == "/health":
@@ -521,7 +697,7 @@ class Handler(BaseHTTPRequestHandler):
         # Session list (also used by Grafana Infinity datasource at /api/sessions)
         if path in ("/api/sessions", "/dashboard-api/sessions"):
             try:
-                return self._json_response(compute_sessions())
+                return self._json_response(compute_sessions(lookback_hours))
             except Exception as e:
                 return self._error(500, str(e))
 
@@ -544,14 +720,14 @@ class Handler(BaseHTTPRequestHandler):
         # Metrics: token usage time series
         if path == "/dashboard-api/metrics/token-usage":
             try:
-                return self._json_response(get_metrics_token_usage())
+                return self._json_response(get_metrics_token_usage(lookback_hours))
             except Exception as e:
                 return self._error(500, str(e))
 
         # Metrics: operation duration time series
         if path == "/dashboard-api/metrics/operations":
             try:
-                return self._json_response(get_metrics_operations())
+                return self._json_response(get_metrics_operations(lookback_hours))
             except Exception as e:
                 return self._error(500, str(e))
 
@@ -575,6 +751,41 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json_response(get_health_summary())
             except Exception as e:
                 return self._error(500, str(e))
+
+        # Debug: show what Prometheus has for a session (for troubleshooting)
+        m = re.match(r"^/dashboard-api/debug/session/([^/]+)$", path)
+        if m:
+            sid = m.group(1)
+            debug = {"session_id": sid, "metrics": {}, "traces": {}}
+            # Check various metrics for this session
+            for metric in [
+                "gen_ai_client_token_usage_count",
+                "gen_ai_client_operation_duration_count",
+                "github_copilot_tool_call_count_total",
+            ]:
+                try:
+                    r = query_prometheus(
+                        f'{metric}{{gen_ai_conversation_id="{sid}"}}')
+                    debug["metrics"][metric] = r.get("data", {}).get("result", [])
+                except Exception as e:
+                    debug["metrics"][metric] = {"error": str(e)}
+            # Check all metric labels for this session
+            try:
+                r = query_prometheus(
+                    f'{{gen_ai_conversation_id="{sid}"}}')
+                debug["metrics"]["all_with_session_id"] = r.get("data", {}).get("result", [])
+            except Exception as e:
+                debug["metrics"]["all_with_session_id"] = {"error": str(e)}
+            # Recent children via trace_id
+            try:
+                sessions_data = compute_sessions(lookback_hours)
+                for s in sessions_data:
+                    if s["session_id"] == sid:
+                        debug["session_status"] = s
+                        break
+            except Exception as e:
+                debug["session_status"] = {"error": str(e)}
+            return self._json_response(debug)
 
         self._error(404, "Not found")
 

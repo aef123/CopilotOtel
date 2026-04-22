@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { getSessionDetail } from "../api/client";
+import { getSessionDetail, getDebugSession } from "../api/client";
 import { useAuth } from "../auth/useAuth";
 import type { SessionDetail as SessionDetailType } from "../api/types";
 import { formatDuration, formatTokens, formatTime } from "../utils/format";
@@ -16,6 +16,8 @@ export function SessionDetail() {
   const [detail, setDetail] = useState<SessionDetailType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [debugData, setDebugData] = useState<any>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -41,7 +43,30 @@ export function SessionDetail() {
       <Link to="/" className="back-link">&larr; Back to Sessions</Link>
 
       <div className="detail-card">
-        <h2>Session Info</h2>
+        <h2>
+          Session Info
+          <button
+            onClick={async () => {
+              setDebugLoading(true);
+              try {
+                const token = await getAccessToken();
+                const d = await getDebugSession(sessionId!, token);
+                setDebugData(d);
+              } catch (e: any) {
+                setDebugData({ error: e.message });
+              } finally {
+                setDebugLoading(false);
+              }
+            }}
+            style={{
+              marginLeft: 16, fontSize: 11, padding: "2px 10px",
+              background: "var(--bg-secondary)", color: "var(--text-secondary)",
+              border: "1px solid var(--border)", borderRadius: 4, cursor: "pointer",
+            }}
+          >
+            {debugLoading ? "Loading..." : "Debug"}
+          </button>
+        </h2>
         <div className="detail-grid">
           <div className="detail-field">
             <div className="label">Session ID</div>
@@ -62,6 +87,16 @@ export function SessionDetail() {
             <div className="value">{detail.turns.length}</div>
           </div>
         </div>
+        {debugData && (
+          <pre style={{
+            marginTop: 12, padding: 12, background: "var(--bg-primary)",
+            border: "1px solid var(--border)", borderRadius: 6,
+            fontSize: 11, fontFamily: "var(--font-mono)",
+            maxHeight: 400, overflow: "auto", whiteSpace: "pre-wrap",
+          }}>
+            {JSON.stringify(debugData, null, 2)}
+          </pre>
+        )}
       </div>
 
       <h2>Prompts / Turns</h2>

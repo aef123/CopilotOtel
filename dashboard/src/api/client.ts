@@ -5,17 +5,35 @@ import type {
   TokenUsagePoint,
   ModelUsage,
   ToolUsage,
-  HealthSummary,
   ApiSpan,
 } from "./types";
 
 const BASE = "/dashboard-api";
 
-async function fetchJson<T>(path: string, token?: string | null): Promise<T> {
+export type LookbackWindow = "6h" | "12h" | "24h" | "2d" | "7d";
+
+export const LOOKBACK_OPTIONS: { value: LookbackWindow; label: string }[] = [
+  { value: "6h", label: "6 hours" },
+  { value: "12h", label: "12 hours" },
+  { value: "24h", label: "24 hours" },
+  { value: "2d", label: "2 days" },
+  { value: "7d", label: "1 week" },
+];
+
+export function getLookback(): LookbackWindow {
+  return (localStorage.getItem("lookback") as LookbackWindow) || "24h";
+}
+
+export function setLookback(v: LookbackWindow) {
+  localStorage.setItem("lookback", v);
+}
+
+async function fetchJson<T>(path: string, token?: string | null, lookback?: LookbackWindow): Promise<T> {
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const resp = await fetch(`${BASE}${path}`, { headers });
+  const sep = path.includes("?") ? "&" : "?";
+  const url = lookback ? `${BASE}${path}${sep}lookback=${lookback}` : `${BASE}${path}`;
+  const resp = await fetch(url, { headers });
   if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
   return resp.json();
 }
@@ -49,8 +67,8 @@ function mapTurn(raw: any): any {
   };
 }
 
-export async function getSessions(token?: string | null): Promise<Session[]> {
-  const raw = await fetchJson<any[]>("/sessions", token);
+export async function getSessions(token?: string | null, lookback?: LookbackWindow): Promise<Session[]> {
+  const raw = await fetchJson<any[]>("/sessions", token, lookback);
   return raw.map(mapSession);
 }
 
@@ -80,33 +98,31 @@ export async function getTraceDetail(
 }
 
 export async function getTokenUsage(
-  token?: string | null
+  token?: string | null,
+  lookback?: LookbackWindow
 ): Promise<TokenUsagePoint[]> {
-  return fetchJson<TokenUsagePoint[]>("/metrics/token-usage", token);
+  return fetchJson<TokenUsagePoint[]>("/metrics/token-usage", token, lookback);
 }
 
 export async function getModelUsage(
-  token?: string | null
+  token?: string | null,
+  lookback?: LookbackWindow
 ): Promise<ModelUsage[]> {
-  return fetchJson<ModelUsage[]>("/metrics/models", token);
+  return fetchJson<ModelUsage[]>("/metrics/models", token, lookback);
 }
 
 export async function getToolUsage(
-  token?: string | null
+  token?: string | null,
+  lookback?: LookbackWindow
 ): Promise<ToolUsage[]> {
-  return fetchJson<ToolUsage[]>("/metrics/tools", token);
+  return fetchJson<ToolUsage[]>("/metrics/tools", token, lookback);
 }
 
-export async function getHealth(
+export async function getDebugSession(
+  sessionId: string,
   token?: string | null
-): Promise<HealthSummary> {
-  const raw = await fetchJson<any>("/health", token);
-  return {
-    activeSessions: raw.active_sessions || 0,
-    idleSessions: raw.idle_sessions || 0,
-    totalSessions: raw.total_sessions || 0,
-    totalTokens: (raw.total_input_tokens || 0) + (raw.total_output_tokens || 0),
-    avgResponseTime: raw.avg_response_time || 0,
-    topModel: raw.top_model || "",
-  };
+): Promise<any> {
+  return fetchJson<any>(`/debug/session/${sessionId}`, token);
 }
+
+

@@ -71,11 +71,4 @@ export interface ToolUsage {
   avgDurationMs: number;
 }
 
-export interface HealthSummary {
-  activeSessions: number;
-  idleSessions: number;
-  totalSessions: number;
-  totalTokens: number;
-  avgResponseTime: number;
-  topModel: string;
-}
+
