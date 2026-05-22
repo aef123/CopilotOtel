@@ -77,7 +77,7 @@ docker compose -f $collectorCompose up -d
 Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 
 # Shared OTel variables (used by both Copilot CLI and Claude Code)
-[Environment]::SetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318", "User")
+[Environment]::SetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318", "User")
 [Environment]::SetEnvironmentVariable("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf", "User")
 [Environment]::SetEnvironmentVariable("OTEL_RESOURCE_ATTRIBUTES", "host.name=$env:COMPUTERNAME", "User")
 
@@ -93,7 +93,7 @@ Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 [Environment]::SetEnvironmentVariable("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "cumulative", "User")
 
 # Also set in current session
-$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318"
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:4318"
 $env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
 $env:OTEL_RESOURCE_ATTRIBUTES = "host.name=$env:COMPUTERNAME"
 $env:CLAUDE_CODE_ENABLE_TELEMETRY = "1"
