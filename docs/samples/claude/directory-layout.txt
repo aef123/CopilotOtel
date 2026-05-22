@@ -1,0 +1,15 @@
+Captured 2026-05-21 — Windows 11 — claude.exe 2.1.147
+
+%USERPROFILE%\.claude\
+├── sessions\                       <-- per-live-process pidfiles
+│   └── <pid>.json                   one per running 'claude' process
+├── projects\                       <-- per-cwd transcript dirs
+│   └── <sanitized-cwd>\
+│       ├── <session-id>.jsonl      append-only transcript
+│       └── memory\                  auto-memory (out of daemon scope)
+├── session-env\<session-id>\       observed empty on this machine
+├── tasks\<session-id>\             harness TaskCreate state + .lock
+├── todos\<sid>-agent-<sid>.json    legacy todos store
+├── history.jsonl                    global per-prompt log (skip)
+├── telemetry\                       empty
+└── settings.json, CLAUDE.md, ...    config (skip)

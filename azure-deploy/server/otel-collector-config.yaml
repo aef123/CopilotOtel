@@ -35,6 +35,13 @@ exporters:
 
 processors:
   batch:
+  # Required because the OTel JS SDK (used by Claude Code) emits Sums with
+  # DELTA aggregation temporality by default, and the prometheusremotewrite
+  # exporter silently drops non-cumulative metrics (Prometheus only stores
+  # cumulative counters). This processor accumulates deltas into cumulative
+  # totals before they reach the exporter. Without it, only the synthesized
+  # target_info gauge ever lands in Prom for Claude metrics.
+  deltatocumulative:
 
 service:
   extensions: [health_check, oidc]
@@ -45,7 +52,7 @@ service:
       exporters: [otlphttp/tempo, debug]
     metrics:
       receivers: [otlp]
-      processors: [batch]
+      processors: [deltatocumulative, batch]
       exporters: [prometheusremotewrite, debug]
     logs:
       receivers: [otlp]

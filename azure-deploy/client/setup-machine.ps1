@@ -86,6 +86,12 @@ Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 [Environment]::SetEnvironmentVariable("OTEL_METRICS_EXPORTER", "otlp", "User")
 [Environment]::SetEnvironmentVariable("OTEL_LOGS_EXPORTER", "otlp", "User")
 
+# Force CUMULATIVE temporality for sums/counters. Prometheus remote-write only
+# accepts cumulative; the OTel JS SDK (used by Claude Code) defaults to delta,
+# which is silently dropped by the prometheusremotewrite exporter. Setting this
+# at the user level so new Claude/Copilot sessions emit cumulative directly.
+[Environment]::SetEnvironmentVariable("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "cumulative", "User")
+
 # Also set in current session
 $env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318"
 $env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
@@ -93,13 +99,15 @@ $env:OTEL_RESOURCE_ATTRIBUTES = "host.name=$env:COMPUTERNAME"
 $env:CLAUDE_CODE_ENABLE_TELEMETRY = "1"
 $env:OTEL_METRICS_EXPORTER = "otlp"
 $env:OTEL_LOGS_EXPORTER = "otlp"
+$env:OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE = "cumulative"
 
-Write-Host "  OTEL_EXPORTER_OTLP_ENDPOINT  = http://localhost:4318"
-Write-Host "  OTEL_EXPORTER_OTLP_PROTOCOL  = http/protobuf"
-Write-Host "  OTEL_RESOURCE_ATTRIBUTES     = host.name=$env:COMPUTERNAME"
-Write-Host "  CLAUDE_CODE_ENABLE_TELEMETRY = 1"
-Write-Host "  OTEL_METRICS_EXPORTER        = otlp"
-Write-Host "  OTEL_LOGS_EXPORTER           = otlp"
+Write-Host "  OTEL_EXPORTER_OTLP_ENDPOINT                    = http://localhost:4318"
+Write-Host "  OTEL_EXPORTER_OTLP_PROTOCOL                    = http/protobuf"
+Write-Host "  OTEL_RESOURCE_ATTRIBUTES                       = host.name=$env:COMPUTERNAME"
+Write-Host "  CLAUDE_CODE_ENABLE_TELEMETRY                   = 1"
+Write-Host "  OTEL_METRICS_EXPORTER                          = otlp"
+Write-Host "  OTEL_LOGS_EXPORTER                             = otlp"
+Write-Host "  OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE = cumulative"
 Write-Host "  (Set as persistent User environment variables)"
 
 # ──────────────────────────────────────────────

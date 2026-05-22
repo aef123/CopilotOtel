@@ -4,6 +4,56 @@
 > and Claude Code. Fills the gaps in their native telemetry: heartbeats, authoritative
 > session lifecycle, and a clean live/active/idle/ended state machine.
 
+## Scope addendum (2026-05-21)
+
+The original plan below describes a daemon that **both** tails the on-disk
+JSONL transcripts AND watches pidfiles/locks. The user has since narrowed
+that scope:
+
+- **No hooks.** The daemon does not install or rely on PreToolUse/PostToolUse/
+  SessionStart hooks. (The hook artifacts found during Claude transcript
+  capture came from unrelated user-global plugins, not from this project.)
+- **No JSONL transcript parsing.** The daemon's inputs are limited to
+  `%USERPROFILE%\.copilot\session-state\<sid>\inuse.<pid>.lock` (Copilot)
+  and `%USERPROFILE%\.claude\sessions\<pid>.json` (Claude). Everything else
+  — turn boundaries, tool spans, token counts, prompts, tool results —
+  comes via native OTel from Copilot CLI / Claude Code, which is already
+  configured in `Set-OtelEnv.ps1` / `setup-machine.ps1`.
+- **The daemon's output is OTel only** (logs/metrics/traces emitted via the
+  same OTLP endpoint everything else uses).
+
+This collapses the daemon's responsibilities to:
+
+1. Detect session **opened** (pidfile appears).
+2. Detect session **ended** (pidfile removed AND PID is dead → graceful;
+   PID dead but pidfile still present → crash).
+3. Detect **orphan** (pidfile present, PID dead — past graceful grace).
+4. Emit **heartbeats** while the pidfile is alive.
+5. For Claude only: forward the `status` field (busy/idle) from the
+   pidfile as a state attribute.
+
+Active-vs-idle for Copilot is **deliberately dropped** — Copilot's lock
+file has no status field. The dashboard already derives active/idle from
+Tempo span recency; that stays as-is.
+
+The rest of the plan below still describes the full file-tail design and
+is kept as reference (much of the state-machine and lock-authority
+analysis still applies). When implementing, follow the addendum scope, not
+the full plan.
+
+### Open question to verify before implementation
+
+`Set-OtelEnv.ps1` enables `OTEL_LOG_USER_PROMPTS=1` and
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`. These should
+push user-prompt content through the native OTel pipeline (as log records
+on Loki for Claude; as span attributes on Tempo for Copilot). Confirm
+this is actually landing in Loki/Tempo before scoping out the JSONL tail
+permanently — if it's not, the dashboard's prompt display feature would
+need to come from somewhere, and "go back and tail JSONL after all" is
+the obvious fallback.
+
+---
+
 ## Why this exists
 
 The existing CopilotOtel stack relies on **native** OTel emission from Copilot CLI
@@ -63,19 +113,97 @@ at.
 - Global: `%USERPROFILE%\.copilot\session-store.db` — a SQLite WAL DB indexing
   all sessions cross-machine. Useful for the API, not needed by the daemon.
 
-### Claude Code — *to be confirmed*
+### Claude Code — confirmed on a Windows 11 machine running `claude.exe 2.1.147`
 
-Empty `%USERPROFILE%\.claude` on the work machine where this plan was drafted;
-Claude isn't installed there. From prior knowledge the transcript lives at
-`%USERPROFILE%\.claude\projects\<sanitized-cwd>\<session-id>.jsonl`, also
-append-only JSONL with `user` / `assistant` / `tool_use` / `tool_result` event
-types, but we must verify the actual path + schema on a machine that has Claude
-installed before planning around it.
+Captured 2026-05-21 from a live session; samples committed under
+`docs/samples/claude/`. The shape is materially different from Copilot
+in three places and the daemon design has to absorb those differences:
 
-**Action item:** run a brief Claude session on a machine with Claude Code
-installed; capture an `events.jsonl`-equivalent sample plus the surrounding
-directory layout; commit them under `docs/samples/claude/` before starting
-Phase B.
+- **Per-session transcript:** `%USERPROFILE%\.claude\projects\<sanitized-cwd>\<session-id>.jsonl`
+  — append-only JSONL, just as expected. `<sanitized-cwd>` rule
+  observed: drive letters become `c--`, path separators become `-`,
+  case is preserved (so `c:\git\OtelCliCapture` and `C:\git\OtelCliCapture`
+  produce two distinct directories — `c--git-OtelCliCapture` and
+  `C--git-OtelCliCapture`). The daemon must canonicalize for de-dup if
+  needed but should not assume case-insensitivity.
+- **Liveness / "lock":** `%USERPROFILE%\.claude\sessions\<pid>.json` —
+  one file per **live** Claude process, removed cleanly on graceful
+  exit. The body is a single JSON object:
+  ```json
+  {"pid":38112,"sessionId":"79ebdd64-...","cwd":"c:\\git\\OtelCliCapture",
+   "startedAt":1779427166873,"version":"2.1.147","peerProtocol":1,
+   "kind":"interactive","entrypoint":"cli",
+   "status":"busy","updatedAt":1779427261873}
+  ```
+  This is the Claude equivalent of Copilot's `inuse.<pid>.lock` — and
+  it is **richer**, carrying `status` (observed: `"busy"`; presumed
+  `"idle"` between turns) and the canonical `sessionId` mapping for
+  the owning process. **There is NO lock file inside the per-session
+  directory** — the per-process pidfile is the only live-session
+  signal. The daemon discovers live sessions by enumerating
+  `sessions\*.json`, not by scanning `projects\` for lock files.
+- **`updatedAt` is event-driven, not a heartbeat.** Confirmed: a 6 s
+  observation while the session was actively running tool calls
+  produced **no change** to the pidfile. `updatedAt` is rewritten on
+  status transitions (busy ↔ idle), not on a wall-clock tick. So the
+  daemon cannot use the pidfile mtime as a periodic liveness pulse; it
+  must combine `(pidfile exists) ∧ (PID alive)` for `is_live`, and use
+  `status` field + transcript events for active/idle classification.
+
+#### Transcript record types
+
+Observed `type` values, with their daemon role:
+
+| `type`                  | Daemon role                                                                                                    |
+|-------------------------|----------------------------------------------------------------------------------------------------------------|
+| `user`                  | Both human prompts AND tool results. Distinguished by `toolUseResult` presence on the record (non-null = tool result). |
+| `assistant`             | One record **per content block** (`thinking` / `text` / `tool_use`). Multiple records share one `message.id`.   |
+| `system`                | Turn-boundary markers. `subtype` ∈ {`turn_duration`, `stop_hook_summary`}.                                      |
+| `attachment`            | Hook execution outputs. `attachment.hookEvent` ∈ {`SessionStart`, `PreToolUse`, `PostToolUse`, …}.              |
+| `ai-title`              | Auto-generated short session title. Useful as a span attribute, not a state signal.                             |
+| `last-prompt`           | Sentinel pointer to the latest user prompt's UUID. State, not event. Skip.                                      |
+| `permission-mode`       | Current permission-mode sentinel. State, not event. Skip.                                                       |
+| `file-history-snapshot` | Snapshot of file backups for Read/Edit safety. Skip.                                                            |
+
+#### Claude → Copilot event mapping (state machine inputs)
+
+| Copilot event                       | Claude equivalent                                                                                          |
+|-------------------------------------|------------------------------------------------------------------------------------------------------------|
+| `session.start` / `session.resume`  | **No transcript event.** Synthesize from `sessions\<pid>.json` first-seen.                                 |
+| `session.shutdown`                  | **No transcript event.** Synthesize from `sessions\<pid>.json` deletion + PID-alive check.                 |
+| `assistant.turn_start`              | **No discrete event.** Synthesize: first `assistant` record after a non-tool-result `user` record.         |
+| `assistant.turn_end`                | `{"type":"system","subtype":"turn_duration","durationMs":N,"messageCount":N}` — emitted at end of each turn.|
+| `assistant.message`                 | `assistant` records with `message.id`. **Dedupe usage by `msg_id`** — same usage block is replayed across each content-block record. |
+| `tool.execution_start`              | **No discrete event.** Synthesize from `assistant.content[].type == "tool_use"`; key by `tool_use_id`.     |
+| `tool.execution_complete`           | **No discrete event.** Synthesize from `user.message.content[].type == "tool_result"` with matching `tool_use_id`. |
+| `hook.start` / `hook.end`           | `attachment` records carrying `hookName`, `hookEvent`, `durationMs`, `exitCode`. One per hook execution.   |
+| `permission.requested` / `.completed`| **No first-class transcript event.** Permissions are reflected in `permission-mode` state and in PreToolUse hook denials surfaced via `attachment`. The open-interval permission counter from the Copilot model **does not apply to Claude**; track only `attachment.exitCode != 0` as a denial signal. |
+| `abort`                             | Inferred when pidfile disappears with no preceding `system / turn_duration`.                                |
+
+#### Token accounting note
+
+Every `assistant` record carries the **full Anthropic `message.usage`**
+(`input_tokens`, `output_tokens`, `cache_creation_input_tokens`,
+`cache_read_input_tokens`, plus `server_tool_use`, `service_tier`,
+`cache_creation.{ephemeral_5m,ephemeral_1h}_input_tokens`, and a
+per-iteration breakdown). The same usage object is duplicated across
+every content-block record sharing the same `message.id` — the daemon
+MUST dedupe by `msg_id` before aggregating, or it will multiply totals
+by 3–5×.
+
+#### Adjacent state directories — out of scope for the daemon
+
+These exist alongside `projects\` and `sessions\` but the daemon does
+not consume them:
+
+| Directory                                | Observed contents                            | Why daemon skips it                               |
+|------------------------------------------|----------------------------------------------|---------------------------------------------------|
+| `%USERPROFILE%\.claude\tasks\<sid>\`     | Numbered `*.json` task records + `.lock`     | Harness TaskCreate state, not session lifecycle.  |
+| `%USERPROFILE%\.claude\todos\`           | `<sid>-agent-<sid>.json` (legacy)            | Older todos store; superseded by `tasks\`.        |
+| `%USERPROFILE%\.claude\session-env\<sid>\` | Empty in every observed case (live + ended) | No data to capture; future-proof presence only.   |
+| `%USERPROFILE%\.claude\history.jsonl`    | Global per-prompt log                        | Redundant with per-session JSONL.                 |
+| `%USERPROFILE%\.claude\telemetry\`       | Empty                                        | Reserved; currently unused.                       |
+| `projects\<cwd>\memory\`                 | Auto-memory storage                          | Out of daemon scope (content surface, not lifecycle). |
 
 ## State model
 
@@ -130,27 +258,44 @@ Detection details for each state are below; see "Lock authority" and
 ### Lock authority — what counts as "live"
 
 A bare PID check is not enough. The daemon validates the lock owner before
-declaring `live`:
+declaring `live`. The lock source differs by tool:
 
-1. Read the PID embedded in the lock filename.
+- **Copilot.** `inuse.<pid>.lock` is empty; PID comes from the
+  filename. One lock file per session directory.
+- **Claude.** `sessions\<pid>.json` is a JSON document; PID comes from
+  both the filename and the `pid` field (they must match). One pidfile
+  per **Claude process**, not per session — the daemon joins to a
+  session via the embedded `sessionId` field.
+
+Validation steps (same for both tools after the PID is resolved):
+
+1. Read the PID from the lock filename. For Claude, also parse the JSON
+   body and require `body.pid == filenamePid` and that
+   `body.sessionId` is non-empty.
 2. Resolve that PID locally. If it doesn't exist, → `orphan`.
 3. Compare process start time to lock mtime — `process.start_time ≤
    lock.mtime + 5 s`. Catches PID reuse. The 5 s slack covers filesystem
    timestamp granularity + clock-update races.
 4. Confirm the process image name matches an allowlist per platform:
-   - Windows: `copilot.exe`, `claude.exe`, `agency.exe` (case-insensitive)
-   - macOS/Linux: `copilot`, `claude`, `node` (Claude Code currently
-     launches as a Node process — confirm during Phase B; until then,
-     `node` is only accepted if cwd / command-line includes `claude`)
+   - Windows: `copilot.exe`, `claude.exe`, `agency.exe` (case-insensitive).
+     Confirmed Windows install path observed for Claude:
+     `%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe`.
+   - macOS/Linux: `copilot`, `claude`, `node`. Claude Code on Windows
+     ships as a native `claude.exe` (not a Node process); on macOS/Linux
+     it may still be a Node launcher — confirm during cross-platform
+     packaging in Phase C. Until then, `node` is only accepted if
+     `cwd` / command-line includes `claude`.
    No signature, path, or full command-line check in Phase A. Document
    that this is intentionally weak — the threat model is accidental PID
    reuse, not adversarial spoofing on the user's own machine.
-5. Confirm hostname/machine-identity. If the session directory is on a
-   synced/network share (OneDrive, SMB, etc.) and the lock came from
-   another host, the lock has no authority on this host — → `orphan` from
-   this daemon's perspective (the other host's daemon, if any, is
-   authoritative). The session.resume event records the originating host;
-   we cross-check.
+5. Confirm hostname/machine-identity. For Copilot, the `session.resume`
+   event records the originating host and we cross-check. For Claude,
+   the pidfile carries no host field — so cross-host detection falls
+   back to checking whether the session directory itself is on a
+   synced/network share. If so and the lock came from a foreign PID
+   (any PID that doesn't resolve locally), treat as `orphan` from this
+   daemon's perspective. The other host's daemon, if any, is
+   authoritative.
 
 ### Shutdown classification — exact transition rules
 
@@ -183,17 +328,38 @@ stream continues until the lock disappears, then a final
 `active` is computed from an in-flight-work model, not a raw "last event"
 timestamp:
 
-- Maintain per-epoch open-interval counters from events:
-  `assistant.turn_start` → `assistant.turn_end`
-  `tool.execution_start` → `tool.execution_complete`
-  `hook.start` → `hook.end`
-  `permission.requested` → `permission.completed`
+- Maintain per-epoch open-interval counters from events.
+  - **Copilot:** `assistant.turn_start` → `assistant.turn_end`,
+    `tool.execution_start` → `tool.execution_complete`,
+    `hook.start` → `hook.end`,
+    `permission.requested` → `permission.completed`.
+  - **Claude:** synthesized intervals only:
+    - "turn open" = `assistant` record observed and no later
+      `system / subtype:turn_duration` for the same logical turn.
+      (Use `parentUuid` chain to associate.)
+    - "tool open" = `assistant` content block `{type:"tool_use", id:"toolu_..."}`
+      with no matching later `user` record carrying
+      `{type:"tool_result", tool_use_id:"toolu_..."}`.
+    - "hook open" = an `attachment` record's `durationMs` is null and
+      `exitCode` is null (the hook is mid-execution); closed when a
+      later `attachment` with the same `toolUseID` reports a
+      `durationMs`. In practice Claude writes the attachment after the
+      hook completes, so this counter usually stays at zero.
+    - **No permission counter.** Claude has no
+      `permission.requested`/`completed` first-class events. Treat
+      `attachment.exitCode != 0` on a PreToolUse hook as a one-shot
+      denial signal, logged but not part of the open-interval count.
+  - Optional cross-check (Claude only): `sessions\<pid>.json.status` flipping
+    `busy → idle` is independent corroboration that all open intervals
+    closed; if the two disagree (status idle but we still think a tool
+    is open), prefer status and log a `watcher.activity_resync` event
+    so we can audit later.
 - If any open-interval count > 0, the session is **active** regardless of
   event age. (Avoids classifying long tool calls or long LLM responses as
   idle.)
-- If all counters are zero AND the last event is `assistant.turn_end`,
-  classify as **idle** immediately (we know the agent is waiting on the
-  user).
+- If all counters are zero AND the last event is `assistant.turn_end`
+  (Copilot) or `system / subtype:turn_duration` (Claude), classify as
+  **idle** immediately (we know the agent is waiting on the user).
 - Otherwise, fall back to time-based: `active` if last event ≤ 60 s ago,
   else `idle`. Bound only.
 
@@ -498,15 +664,22 @@ content reaches the OTel pipeline, even though it's all available on disk.
                    │  copilot-session-watcher (C#)     │
                    │                                   │
 ~/.copilot/        │  ┌─────────────────────────────┐  │       ┌──────────────┐
-session-state/  ─► │  │ FileSystemWatcher           │  │       │ OTLP gRPC /  │
-                   │  │  (new session dirs)         │  │  ───► │ http-proto   │
-                   │  └────────────┬────────────────┘  │       │ collector    │
-~/.claude/         │               │                   │       └──────────────┘
-projects/       ─► │  ┌────────────▼────────────────┐  │
-                   │  │ SessionTailer (per session) │  │       (already
-                   │  │  - read events.jsonl tail   │  │        running via
-                   │  │  - poll lock file + PID     │  │        docker-compose
-                   │  │  - state machine            │  │        or Azure)
+session-state/  ─► │  │ FileSystemWatcher x2        │  │       │ OTLP gRPC /  │
+                   │  │  - Copilot: session-state\  │  │  ───► │ http-proto   │
+~/.claude/         │  │      (new session dirs)     │  │       │ collector    │
+sessions/       ─► │  │  - Claude: ~/.claude/       │  │       └──────────────┘
+                   │  │      sessions\ (new         │  │
+                   │  │      <pid>.json pidfiles)   │  │
+~/.claude/         │  └────────────┬────────────────┘  │
+projects/       ─► │               │                   │       (collector
+                   │  ┌────────────▼────────────────┐  │        already
+                   │  │ SessionTailer (per session) │  │        running via
+                   │  │  - tail events.jsonl        │  │        docker-compose
+                   │  │      (Copilot) OR           │  │        or Azure)
+                   │  │    tail <sid>.jsonl         │  │
+                   │  │      (Claude)               │  │
+                   │  │  - poll lock/pidfile + PID  │  │
+                   │  │  - state machine            │  │
                    │  │  - emit logs + spans        │  │
                    │  └────────────┬────────────────┘  │
                    │               │                   │
@@ -544,7 +717,7 @@ session-watcher/
 │   │   ├── Sources/
 │   │   │   ├── ISessionSource.cs
 │   │   │   ├── CopilotSource.cs       # ~/.copilot/session-state watcher
-│   │   │   └── ClaudeSource.cs        # ~/.claude/projects watcher (Phase B)
+│   │   │   └── ClaudeSource.cs        # ~/.claude/sessions + ~/.claude/projects (Phase B)
 │   │   ├── Tailing/
 │   │   │   ├── SessionTailer.cs       # owns one session
 │   │   │   ├── EventsJsonlTail.cs     # newline-delim JSON tail w/ position
@@ -808,11 +981,32 @@ once the dashboard contract is validated.
 
 ### Phase B — Claude Code
 
-1. Capture a real Claude transcript on a machine with it installed (open
-   action item — needs the user to run claude briefly).
-2. Implement `ClaudeSource` against the verified schema.
-3. Reuse the same state model. If Claude events differ in structure, map
-   them in `ClaudeSource` before they hit the shared `SessionTailer`.
+Schema verified; samples committed under `docs/samples/claude/`. The
+remaining work is implementation:
+
+1. Implement `ClaudeSource` to:
+   - Discover live sessions by enumerating
+     `%USERPROFILE%\.claude\sessions\*.json` (FSW + 2 s poll, same
+     pattern as Copilot).
+   - For each pidfile, parse `{pid, sessionId, cwd}` and locate the
+     matching transcript at
+     `%USERPROFILE%\.claude\projects\<sanitize(cwd)>\<sessionId>.jsonl`.
+     The cwd-sanitization rule is documented in
+     `docs/samples/claude/README.md` (drive `:` → `--`, separators → `-`,
+     case preserved).
+   - Synthesize the Claude → Copilot event mapping from the table in
+     the "Claude Code — confirmed" section above, before events hit
+     the shared `SessionTailer` state machine.
+2. Add Claude-specific lock-authority handling:
+   - PID source = both the filename AND the `pid` field in the JSON
+     body (require equality).
+   - `sessions\<pid>.json` deletion + PID dead = graceful shutdown.
+   - `sessions\<pid>.json` present + PID dead = crash.
+3. Dedupe assistant `message.usage` by `msg_id` before any token
+   aggregation (Phase A.5 token surface).
+4. Skip the permission open-interval counter for Claude — not
+   first-class in the transcript; treat denials as one-shot signals
+   sourced from `attachment.exitCode != 0`.
 
 ### Phase C — Autostart + cross-platform packaging
 
@@ -864,9 +1058,9 @@ Locked:
 
 Still open:
 
-1. **Claude transcript verification.** Need a real sample (user offered to run
-   claude on a machine that has it installed). Blocks Phase B start, not
-   Phase A.
+*(none — Claude transcript verification was completed 2026-05-21;
+samples committed under `docs/samples/claude/` and the daemon design is
+unblocked for both tools.)*
 
 ## Context carried over from copilot-detour
 
