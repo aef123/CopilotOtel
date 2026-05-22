@@ -4,6 +4,19 @@
 > and Claude Code. Fills the gaps in their native telemetry: heartbeats, authoritative
 > session lifecycle, and a clean live/active/idle/ended state machine.
 
+## Implementation status (2026-05-22)
+
+Phase A is built in `session-watcher/` under the pidfile-only scope below.
+End-to-end smoke test passed: the daemon correctly detected the live Claude
+session AND surfaced seven stale Copilot session-state dirs as `Orphan`.
+43 unit tests covering pidfile/lock parsing, the state classifier, both
+source orchestrators, the singleton lock, and the OS process probe.
+
+Not yet built (see `session-watcher/README.md` "What's NOT in this build"):
+autostart installers, image-name PID-reuse defense, orphan-timeout
+transitions, and promoting Claude's `status` field to a first-class state.
+Each is a self-contained follow-up.
+
 ## Scope addendum (2026-05-21)
 
 The original plan below describes a daemon that **both** tails the on-disk

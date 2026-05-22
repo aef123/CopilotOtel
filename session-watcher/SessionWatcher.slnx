@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SessionWatcher.Tests/SessionWatcher.Tests.csproj" />
+    <Project Path="src/SessionWatcher/SessionWatcher.csproj" />
+  </Folder>
+</Solution>
