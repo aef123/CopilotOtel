@@ -902,3 +902,33 @@ h2 {
 
 .tool-claude { background: #6c5ce7; color: #fff; }
 .tool-copilot { background: #3a86ff; color: #fff; }
+
+/* Session card: prompt preview + full-width ID */
+.session-card-id {
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+.session-card-prompt {
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin: 4px 0;
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.prompt-cell {
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-secondary, var(--text-primary));
+}
+.session-id-cell { word-break: break-all; min-width: 290px; }
+.badge-closed { background: #8a4b07; color: #fff; }

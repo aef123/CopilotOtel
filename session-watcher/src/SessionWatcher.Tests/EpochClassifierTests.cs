@@ -23,7 +23,7 @@ public class EpochClassifierTests
             previous: EpochState.Opening,
             observation: new Observation(PidfilePresent: true, PidAlive: false));
 
-        Assert.Equal(EpochState.Orphan, result.NewState);
+        Assert.Equal(EpochState.Closed, result.NewState);
         Assert.True(result.Transitioned);
         Assert.Null(result.ShutdownType);
     }
@@ -46,7 +46,7 @@ public class EpochClassifierTests
             previous: EpochState.Live,
             observation: new Observation(PidfilePresent: true, PidAlive: false));
 
-        Assert.Equal(EpochState.Orphan, result.NewState);
+        Assert.Equal(EpochState.Closed, result.NewState);
         Assert.True(result.Transitioned);
         Assert.Null(result.ShutdownType);
     }
@@ -67,7 +67,7 @@ public class EpochClassifierTests
     public void Orphan_EndsAsCrash_WhenPidfileVanishes()
     {
         var result = EpochClassifier.Classify(
-            previous: EpochState.Orphan,
+            previous: EpochState.Closed,
             observation: new Observation(PidfilePresent: false, PidAlive: false));
 
         Assert.Equal(EpochState.Ended, result.NewState);
@@ -82,7 +82,7 @@ public class EpochClassifierTests
         // checks live one layer up and would already have decided "image mismatch =
         // still orphan" before the classifier ever sees PidAlive=true here.
         var result = EpochClassifier.Classify(
-            previous: EpochState.Orphan,
+            previous: EpochState.Closed,
             observation: new Observation(PidfilePresent: true, PidAlive: true));
 
         Assert.Equal(EpochState.Live, result.NewState);

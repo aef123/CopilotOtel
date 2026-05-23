@@ -59,7 +59,7 @@ public class CopilotSourceTests : IDisposable
         NewSource().PollOnce(_sink);
 
         var t = Assert.Single(_sink.Transitions);
-        Assert.Equal(EpochState.Orphan, t.To);
+        Assert.Equal(EpochState.Closed, t.To);
     }
 
     [Fact]

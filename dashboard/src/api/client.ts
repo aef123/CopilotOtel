@@ -53,6 +53,7 @@ function mapSession(raw: any): Session {
     startTime: new Date(raw.first_seen).toISOString(),
     lastActivity: new Date(raw.last_activity).toISOString(),
     durationMs: (raw.last_activity - raw.first_seen) || 0,
+    lastPrompt: raw.last_prompt || "",
   };
 }
 

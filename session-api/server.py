@@ -360,8 +360,26 @@ def compute_sessions(lookback_hours=None):
         "version": "", "duration_ns": 0, "host": "", "model": "",
         "total_input_tokens": 0, "total_output_tokens": 0,
         "trace_ids": set(), "source": "",
+        "last_prompt": "", "last_prompt_at": 0,
     })
     children_max = defaultdict(int)
+
+    def _capture_last_prompt(data):
+        """For each session, remember the user_prompt from the most recent
+        claude_code.interaction span. Run after process_spans so sessions{} is
+        keyed."""
+        for trace in data.get("traces", []):
+            for ss in trace.get("spanSets", []):
+                for span in ss.get("spans", []):
+                    sid = _span_session_id(span)
+                    if not sid: continue
+                    prompt = get_attr(span, "user_prompt") or ""
+                    if not prompt: continue
+                    t = int(span["startTimeUnixNano"]) // 1_000_000
+                    rec = sessions[sid]
+                    if t > rec.get("last_prompt_at", 0):
+                        rec["last_prompt"] = prompt
+                        rec["last_prompt_at"] = t
 
     def process_spans(data, source_name, is_root):
         """is_root=True means each span counts as a turn AND seeds the session."""
@@ -418,6 +436,7 @@ def compute_sessions(lookback_hours=None):
     process_spans(claude_data, "Claude", is_root=True)
     process_spans(claude_interactions, "Claude", is_root=True)
     process_spans(claude_llm, "Claude", is_root=False)
+    _capture_last_prompt(claude_interactions)
 
     # Build trace_id -> session_id map from invoke_agent spans
     trace_to_session = {}
@@ -547,6 +566,8 @@ def compute_sessions(lookback_hours=None):
             "total_input_tokens": c["total_input_tokens"] if c else 0,
             "total_output_tokens": c["total_output_tokens"] if c else 0,
             "cli_version": c["version"] if c else "",
+            "last_prompt": c.get("last_prompt", "") if c else "",
+            "last_prompt_at": c.get("last_prompt_at", 0) if c else 0,
         })
 
     # Merge in sessions known to the watcher daemon but not yet seen in Tempo
@@ -577,7 +598,8 @@ def compute_sessions(lookback_hours=None):
             "active": "Active",
             "idle": "Idle",
             "live": "Active",
-            "orphan": "Orphan",
+            "closed": "Closed",
+            "orphan": "Closed",  # backward-compat for daemons still emitting old label
         }.get(watcher_state, "Unknown")
         rows.append({
             "session_id": sid,
@@ -585,13 +607,15 @@ def compute_sessions(lookback_hours=None):
             "source": (ws.get("tool") or "").capitalize(),
             "host": ws.get("host", ""),
             "model": "",
-            "last_activity": now_ms,  # newly observed
+            "last_activity": now_ms,
             "first_seen": now_ms,
             "turns": 0,
             "last_turn_duration_s": 0,
             "total_input_tokens": 0,
             "total_output_tokens": 0,
             "cli_version": ws.get("serviceVersion", ""),
+            "last_prompt": "",
+            "last_prompt_at": 0,
             "watcher_state": ws.get("state"),
             "watcher_host": ws.get("host"),
             "watcher_tool": ws.get("tool"),

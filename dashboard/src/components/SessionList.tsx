@@ -17,11 +17,12 @@ export function SessionList({ sessions }: { sessions: Session[] }) {
           <th>Source</th>
           <th>Session ID</th>
           <th>Machine</th>
+          <th>Last prompt</th>
           <th>Model</th>
           <th>Turns</th>
           <th>Tokens</th>
           <th>Duration</th>
-          <th>Last Activity</th>
+          <th>Last activity</th>
         </tr>
       </thead>
       <tbody>
@@ -29,8 +30,9 @@ export function SessionList({ sessions }: { sessions: Session[] }) {
           <tr key={s.sessionId} onClick={() => nav(`/sessions/${s.sessionId}`)}>
             <td><span className={`badge badge-${s.status.toLowerCase()}`}>{s.status}</span></td>
             <td>{s.source && <span className={`badge badge-source-${s.source.toLowerCase()}`}>{s.source}</span>}</td>
-            <td className="session-id-cell" title={s.sessionId}>{s.sessionId.slice(0, 12)}...</td>
+            <td className="mono session-id-cell">{s.sessionId}</td>
             <td>{s.machine || "Unknown"}</td>
+            <td className="prompt-cell" title={s.lastPrompt}>{formatPrompt(s.lastPrompt)}</td>
             <td>{s.model}</td>
             <td>{s.turns}</td>
             <td>{formatTokens(s.inputTokens + s.outputTokens)}</td>
@@ -41,4 +43,10 @@ export function SessionList({ sessions }: { sessions: Session[] }) {
       </tbody>
     </table>
   );
+}
+
+function formatPrompt(prompt?: string): string {
+  if (!prompt) return "—";
+  if (prompt === "<REDACTED>") return "<redacted — set OTEL_LOG_USER_PROMPTS=1>";
+  return prompt.length > 90 ? prompt.slice(0, 87) + "…" : prompt;
 }

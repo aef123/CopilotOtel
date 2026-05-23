@@ -114,12 +114,12 @@ public sealed class CopilotSource
         {
             sink.OnTransition(snapshot, tracker.LastState, result.NewState, result.ShutdownType);
 
-            if (result.NewState == EpochState.Orphan && tracker.OrphanFirstSeenAt is null)
+            if (result.NewState == EpochState.Closed && tracker.OrphanFirstSeenAt is null)
             {
                 tracker.OrphanFirstSeenAt = observedAt;
                 tracker.OrphanTimedOut = false;
             }
-            else if (result.NewState != EpochState.Orphan)
+            else if (result.NewState != EpochState.Closed)
             {
                 tracker.OrphanFirstSeenAt = null;
                 tracker.OrphanTimedOut = false;
@@ -128,7 +128,7 @@ public sealed class CopilotSource
             tracker.LastState = result.NewState;
         }
 
-        if (result.NewState == EpochState.Orphan
+        if (result.NewState == EpochState.Closed
             && !tracker.OrphanTimedOut
             && tracker.OrphanFirstSeenAt is { } firstSeen
             && observedAt - firstSeen >= _orphanTimeout)
@@ -137,7 +137,7 @@ public sealed class CopilotSource
             tracker.OrphanTimedOut = true;
         }
 
-        if (result.NewState is EpochState.Live or EpochState.Orphan)
+        if (result.NewState is EpochState.Live or EpochState.Closed)
         {
             sink.OnHeartbeat(snapshot);
         }

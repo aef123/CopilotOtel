@@ -55,7 +55,7 @@ public sealed class OtelSink : IEpochEventSink
         {
             StartLifecycleSpan(snapshot);
         }
-        else if (IsAliveState(to) && from == EpochState.Orphan && !TrackedHasSpan(snapshot))
+        else if (IsAliveState(to) && from == EpochState.Closed && !TrackedHasSpan(snapshot))
         {
             // Orphan that recovered before we ever opened a span (cold-start case).
             StartLifecycleSpan(snapshot);
@@ -100,14 +100,14 @@ public sealed class OtelSink : IEpochEventSink
         // Stop counting in the orphan gauge for this epoch — increments
         // the ended counter under shutdown_type=orphan_timeout. The epoch
         // stays in Orphan state for visibility but doesn't accrue further.
-        _stateCounts.AddOrUpdate((snapshot.Tool, EpochState.Orphan),
+        _stateCounts.AddOrUpdate((snapshot.Tool, EpochState.Closed),
             _ => 0,
             (_, prev) => Math.Max(0, prev - 1));
 
         _endedCounter.Add(1,
             new KeyValuePair<string, object?>("tool", snapshot.Tool),
             new KeyValuePair<string, object?>("host", _host),
-            new KeyValuePair<string, object?>("shutdown_type", "orphan_timeout"));
+            new KeyValuePair<string, object?>("shutdown_type", "closed_timeout"));
 
         using (_logger.BeginScope(BuildBaseScope(snapshot)))
         {
@@ -164,7 +164,7 @@ public sealed class OtelSink : IEpochEventSink
         sessionId.Length > 8 ? sessionId[..8] : sessionId;
 
     private static bool IsReportedState(EpochState s) =>
-        s is EpochState.Live or EpochState.Active or EpochState.Idle or EpochState.Orphan;
+        s is EpochState.Live or EpochState.Active or EpochState.Idle or EpochState.Closed;
 
     private static bool IsAliveState(EpochState s) =>
         s is EpochState.Live or EpochState.Active or EpochState.Idle;

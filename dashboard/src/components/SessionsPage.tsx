@@ -5,7 +5,6 @@ import { useAuth } from "../auth/useAuth";
 import type { Session } from "../api/types";
 import { SessionGrid } from "./SessionGrid";
 import { SessionList } from "./SessionList";
-import { WatcherPanel } from "./WatcherPanel";
 
 type ViewMode = "grid" | "list";
 
@@ -58,7 +57,6 @@ export function SessionsPage() {
 
   return (
     <>
-      <WatcherPanel />
       <div className="filters">
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
           <option value="all">All Status</option>

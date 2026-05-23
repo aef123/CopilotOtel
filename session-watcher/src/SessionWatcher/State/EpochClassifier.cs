@@ -10,9 +10,12 @@ public enum EpochState
     Active,
     /// <summary>Owning PID alive AND tool reports it's idle (Claude pidfile status=idle).</summary>
     Idle,
-    /// <summary>Pidfile/lock present but owning PID dead or image mismatch.</summary>
-    Orphan,
-    /// <summary>Epoch closed. Terminal.</summary>
+    /// <summary>Pidfile/lock present but owning PID dead or image mismatch.
+    /// (Internally was named Orphan; renamed for user-facing clarity — from
+    /// the user's perspective the session is "closed" because the owning
+    /// process exited, even though it didn't clean up its lock file.)</summary>
+    Closed,
+    /// <summary>Epoch fully torn down (file gone). Terminal; no longer tracked.</summary>
     Ended,
 }
 
@@ -47,7 +50,7 @@ public static class EpochClassifier
             return new ClassificationResult(next, Transitioned: false, ShutdownType: null);
 
         ShutdownType? shutdown = next == EpochState.Ended
-            ? (previous == EpochState.Orphan ? State.ShutdownType.Crash : State.ShutdownType.Graceful)
+            ? (previous == EpochState.Closed ? State.ShutdownType.Crash : State.ShutdownType.Graceful)
             : null;
 
         return new ClassificationResult(next, Transitioned: true, ShutdownType: shutdown);
@@ -58,6 +61,6 @@ public static class EpochClassifier
         EpochState.Ended => EpochState.Ended,
         _ when !observation.PidfilePresent => EpochState.Ended,
         _ when observation.PidAlive => EpochState.Live,
-        _ => EpochState.Orphan,
+        _ => EpochState.Closed,
     };
 }

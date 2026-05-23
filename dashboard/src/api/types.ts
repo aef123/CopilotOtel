@@ -11,6 +11,7 @@ export interface Session {
   startTime: string;
   lastActivity: string;
   durationMs: number;
+  lastPrompt?: string;
 }
 
 export interface Turn {

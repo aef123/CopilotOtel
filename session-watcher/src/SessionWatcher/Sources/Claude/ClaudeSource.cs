@@ -102,12 +102,12 @@ public sealed class ClaudeSource
         {
             sink.OnTransition(snapshot, tracker.LastState, refinedState, result.ShutdownType);
 
-            if (refinedState == EpochState.Orphan && tracker.OrphanFirstSeenAt is null)
+            if (refinedState == EpochState.Closed && tracker.OrphanFirstSeenAt is null)
             {
                 tracker.OrphanFirstSeenAt = observedAt;
                 tracker.OrphanTimedOut = false;
             }
-            else if (refinedState != EpochState.Orphan)
+            else if (refinedState != EpochState.Closed)
             {
                 tracker.OrphanFirstSeenAt = null;
                 tracker.OrphanTimedOut = false;
@@ -118,7 +118,7 @@ public sealed class ClaudeSource
         }
 
         // Fire orphan-timeout once if the epoch has been Orphan long enough.
-        if (refinedState == EpochState.Orphan
+        if (refinedState == EpochState.Closed
             && !tracker.OrphanTimedOut
             && tracker.OrphanFirstSeenAt is { } firstSeen
             && observedAt - firstSeen >= _orphanTimeout)
@@ -127,7 +127,7 @@ public sealed class ClaudeSource
             tracker.OrphanTimedOut = true;
         }
 
-        if (refinedState is EpochState.Live or EpochState.Active or EpochState.Idle or EpochState.Orphan)
+        if (refinedState is EpochState.Live or EpochState.Active or EpochState.Idle or EpochState.Closed)
         {
             sink.OnHeartbeat(snapshot);
             tracker.LastSnapshot = snapshot;

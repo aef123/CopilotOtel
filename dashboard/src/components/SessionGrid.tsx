@@ -23,7 +23,12 @@ export function SessionGrid({ sessions }: { sessions: Session[] }) {
             <span className="session-card-heartbeat">{timeAgo(s.lastActivity)}</span>
           </div>
           <div className="session-card-machine">{s.machine || "Unknown"}</div>
-          <div className="session-card-id">{s.sessionId.slice(0, 12)}...</div>
+          <div className="session-card-id mono">{s.sessionId}</div>
+          {s.lastPrompt && (
+            <div className="session-card-prompt" title={s.lastPrompt}>
+              {formatPrompt(s.lastPrompt)}
+            </div>
+          )}
           <div className="session-card-meta">
             {s.model && <span className="session-card-model">{s.model}</span>}
             {s.version && <span className="session-card-version">v{s.version}</span>}
@@ -46,4 +51,9 @@ export function SessionGrid({ sessions }: { sessions: Session[] }) {
       ))}
     </div>
   );
+}
+
+function formatPrompt(prompt: string): string {
+  if (prompt === "<REDACTED>") return "<redacted prompt — set OTEL_LOG_USER_PROMPTS=1>";
+  return prompt.length > 120 ? prompt.slice(0, 117) + "…" : prompt;
 }

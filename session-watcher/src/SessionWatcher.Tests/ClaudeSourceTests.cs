@@ -63,7 +63,7 @@ public class ClaudeSourceTests : IDisposable
         source.PollOnce(_sink);
 
         var t = Assert.Single(_sink.Transitions);
-        Assert.Equal(EpochState.Orphan, t.To);
+        Assert.Equal(EpochState.Closed, t.To);
     }
 
     [Fact]
@@ -102,7 +102,7 @@ public class ClaudeSourceTests : IDisposable
 
         Assert.Equal(3, _sink.Transitions.Count);
         Assert.Equal(EpochState.Active, _sink.Transitions[0].To);  // default status=busy
-        Assert.Equal(EpochState.Orphan, _sink.Transitions[1].To);
+        Assert.Equal(EpochState.Closed, _sink.Transitions[1].To);
         Assert.Equal(EpochState.Ended, _sink.Transitions[2].To);
         Assert.Equal(ShutdownType.Crash, _sink.Transitions[2].ShutdownType);
     }
@@ -234,7 +234,7 @@ public class ClaudeSourceTests : IDisposable
         NewSource().PollOnce(_sink);
 
         var t = Assert.Single(_sink.Transitions);
-        Assert.Equal(EpochState.Orphan, t.To);
+        Assert.Equal(EpochState.Closed, t.To);
     }
 
     [Fact]
