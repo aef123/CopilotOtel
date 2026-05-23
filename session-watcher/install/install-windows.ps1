@@ -88,11 +88,12 @@ if ($existing) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
-# Wrap the daemon launch in cmd.exe so we can redirect stdout/stderr to a log
-# file. The OTel pipeline ships everything to Loki when the local collector is
-# up, but the file is a backstop for diagnosing daemon startup issues.
+# Launch the exe directly. It's built as a WinExe so it runs with no console
+# window, and it writes its own rolling log file via FileLoggerProvider — see
+# %LOCALAPPDATA%\CopilotOtel\session-watcher\logs\watcher.log. Diagnostics
+# also flow to Loki via the OTel pipeline when the local collector is up.
 $logFile = Join-Path $LogDir "watcher.log"
-$action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"`"$TargetExe`" > `"$logFile`" 2>&1`""
+$action = New-ScheduledTaskAction -Execute $TargetExe
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `

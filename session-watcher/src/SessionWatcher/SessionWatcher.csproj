@@ -1,7 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <!--
+      WinExe on Windows runs without a console window — important since the
+      daemon is launched non-interactively via Task Scheduler. On non-Windows
+      RIDs this is treated as Exe. Diagnostics still flow to the OTel pipeline
+      and to a rolling on-disk log via FileLoggerProvider.
+    -->
+    <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
