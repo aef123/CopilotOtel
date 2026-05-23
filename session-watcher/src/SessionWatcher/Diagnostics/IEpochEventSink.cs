@@ -14,4 +14,9 @@ public interface IEpochEventSink
 
     /// <summary>Periodic heartbeat for a live or orphan epoch (skipped for Ended).</summary>
     void OnHeartbeat(EpochSnapshot snapshot);
+
+    /// <summary>Fires exactly once per epoch when it has been in Orphan for the
+    /// configured timeout. The epoch stays in Orphan for visibility, but stops
+    /// contributing to the orphan gauge from this point on.</summary>
+    void OnOrphanTimeout(EpochSnapshot snapshot);
 }

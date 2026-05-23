@@ -51,8 +51,13 @@ public sealed class OtelSink : IEpochEventSink
     {
         UpdateStateCounts(snapshot.Tool, from, to);
 
-        if (to is EpochState.Live or EpochState.Orphan && from == EpochState.Opening)
+        if (IsAliveState(to) && from == EpochState.Opening)
         {
+            StartLifecycleSpan(snapshot);
+        }
+        else if (IsAliveState(to) && from == EpochState.Orphan && !TrackedHasSpan(snapshot))
+        {
+            // Orphan that recovered before we ever opened a span (cold-start case).
             StartLifecycleSpan(snapshot);
         }
         else if (to == EpochState.Ended)
@@ -87,6 +92,28 @@ public sealed class OtelSink : IEpochEventSink
             _logger.LogInformation(
                 "heartbeat {Tool}/{SessionShort} state={State}",
                 snapshot.Tool, ShortId(snapshot.SessionId), snapshot.State);
+        }
+    }
+
+    public void OnOrphanTimeout(EpochSnapshot snapshot)
+    {
+        // Stop counting in the orphan gauge for this epoch — increments
+        // the ended counter under shutdown_type=orphan_timeout. The epoch
+        // stays in Orphan state for visibility but doesn't accrue further.
+        _stateCounts.AddOrUpdate((snapshot.Tool, EpochState.Orphan),
+            _ => 0,
+            (_, prev) => Math.Max(0, prev - 1));
+
+        _endedCounter.Add(1,
+            new KeyValuePair<string, object?>("tool", snapshot.Tool),
+            new KeyValuePair<string, object?>("host", _host),
+            new KeyValuePair<string, object?>("shutdown_type", "orphan_timeout"));
+
+        using (_logger.BeginScope(BuildBaseScope(snapshot)))
+        {
+            _logger.LogWarning(
+                "orphan_timeout {Tool}/{SessionShort} (stale lock; epoch closed for accounting)",
+                snapshot.Tool, ShortId(snapshot.SessionId));
         }
     }
 
@@ -136,15 +163,23 @@ public sealed class OtelSink : IEpochEventSink
     private static string ShortId(string sessionId) =>
         sessionId.Length > 8 ? sessionId[..8] : sessionId;
 
+    private static bool IsReportedState(EpochState s) =>
+        s is EpochState.Live or EpochState.Active or EpochState.Idle or EpochState.Orphan;
+
+    private static bool IsAliveState(EpochState s) =>
+        s is EpochState.Live or EpochState.Active or EpochState.Idle;
+
+    private bool TrackedHasSpan(EpochSnapshot s) => _lifecycle.ContainsKey(LifecycleKey(s));
+
     private void UpdateStateCounts(string tool, EpochState from, EpochState to)
     {
-        if (from is EpochState.Live or EpochState.Orphan)
+        if (IsReportedState(from))
         {
             _stateCounts.AddOrUpdate((tool, from),
                 _ => 0,
                 (_, prev) => Math.Max(0, prev - 1));
         }
-        if (to is EpochState.Live or EpochState.Orphan)
+        if (IsReportedState(to))
         {
             _stateCounts.AddOrUpdate((tool, to),
                 _ => 1,

@@ -25,6 +25,12 @@ public sealed class ConsoleSink : IEpochEventSink
             $"state={snapshot.State}{extra} pid={snapshot.Pid}");
     }
 
+    public void OnOrphanTimeout(EpochSnapshot snapshot)
+    {
+        Console.WriteLine(
+            $"[{snapshot.ObservedAt:HH:mm:ss}] ORPHAN_TIMEOUT {snapshot.Tool}/{Short(snapshot.SessionId)}");
+    }
+
     private static string Short(string sessionId) =>
         sessionId.Length > 8 ? sessionId[..8] : sessionId;
 }

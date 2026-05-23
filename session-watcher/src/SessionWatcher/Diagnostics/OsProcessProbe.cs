@@ -8,22 +8,41 @@ namespace SessionWatcher.Diagnostics;
 /// </summary>
 public sealed class OsProcessProbe : IProcessProbe
 {
-    public bool IsAlive(int pid)
+    public bool IsAlive(int pid, IReadOnlyList<string>? allowedImageNames = null)
     {
         if (pid <= 0) return false;
+        Process? p = null;
         try
         {
-            using var p = Process.GetProcessById(pid);
+            p = Process.GetProcessById(pid);
             // p.HasExited can throw on a zombie / access-denied process; treat any throw as "dead".
-            return !p.HasExited;
+            if (p.HasExited) return false;
+
+            if (allowedImageNames is { Count: > 0 })
+            {
+                // Process.ProcessName returns the executable base name without extension
+                // (e.g. "claude" for "claude.exe"). Strip extensions from the allowlist
+                // when comparing so callers can pass either form.
+                var actual = p.ProcessName;
+                foreach (var allowed in allowedImageNames)
+                {
+                    if (string.Equals(StripExe(allowed), actual, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+            return true;
         }
-        catch (ArgumentException)
+        catch (ArgumentException) { return false; }
+        catch (InvalidOperationException) { return false; }
+        finally
         {
-            return false;
-        }
-        catch (InvalidOperationException)
-        {
-            return false;
+            p?.Dispose();
         }
     }
+
+    private static string StripExe(string name) =>
+        name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            ? name[..^4]
+            : name;
 }

@@ -7,6 +7,7 @@ internal sealed class RecordingSink : IEpochEventSink
 {
     public List<RecordedTransition> Transitions { get; } = new();
     public List<RecordedHeartbeat> Heartbeats { get; } = new();
+    public List<RecordedOrphanTimeout> OrphanTimeouts { get; } = new();
 
     public void OnTransition(EpochSnapshot snapshot, EpochState from, EpochState to, ShutdownType? shutdown) =>
         Transitions.Add(new RecordedTransition(
@@ -22,6 +23,11 @@ internal sealed class RecordingSink : IEpochEventSink
             SessionId: snapshot.SessionId,
             State: snapshot.State,
             ClaudeStatus: snapshot.ClaudeStatus));
+
+    public void OnOrphanTimeout(EpochSnapshot snapshot) =>
+        OrphanTimeouts.Add(new RecordedOrphanTimeout(
+            Tool: snapshot.Tool,
+            SessionId: snapshot.SessionId));
 }
 
 internal sealed record RecordedTransition(
@@ -29,3 +35,5 @@ internal sealed record RecordedTransition(
 
 internal sealed record RecordedHeartbeat(
     string Tool, string SessionId, EpochState State, string? ClaudeStatus);
+
+internal sealed record RecordedOrphanTimeout(string Tool, string SessionId);

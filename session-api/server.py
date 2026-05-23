@@ -17,7 +17,9 @@ from collections import defaultdict
 
 TEMPO_URL = os.environ.get("TEMPO_URL", "http://tempo:3200")
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
+LOKI_URL = os.environ.get("LOKI_URL", "http://loki:3100")
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "24"))
+WATCHER_FRESHNESS_SECONDS = int(os.environ.get("WATCHER_FRESHNESS_SECONDS", "300"))
 IDLE_TIMEOUT_SECONDS = int(os.environ.get("IDLE_TIMEOUT_SECONDS", "300"))  # 5 minutes
 SKIP_AUTH = os.environ.get("SKIP_AUTH", "false").lower() == "true"
 TENANT_ID = os.environ.get("TENANT_ID", "")
@@ -165,6 +167,100 @@ def query_prometheus_range(promql, start, end, step="60s"):
     url = f"{PROMETHEUS_URL}/api/v1/query_range?{urllib.parse.urlencode(params)}"
     resp = urllib.request.urlopen(urllib.request.Request(url), timeout=10)
     return json.loads(resp.read())
+
+
+# ---------------------------------------------------------------------------
+# Loki helpers
+# ---------------------------------------------------------------------------
+
+def query_loki_range(logql, start_ns, end_ns, limit=5000):
+    params = {
+        "query": logql,
+        "start": str(start_ns),
+        "end": str(end_ns),
+        "limit": str(limit),
+        "direction": "backward",
+    }
+    url = f"{LOKI_URL}/loki/api/v1/query_range?{urllib.parse.urlencode(params)}"
+    resp = urllib.request.urlopen(urllib.request.Request(url), timeout=15)
+    return json.loads(resp.read())
+
+
+# ---------------------------------------------------------------------------
+# Watcher state: latest per (host, session, epoch) from Loki
+# ---------------------------------------------------------------------------
+
+def get_watcher_state():
+    """Return the current live + orphan sessions known to the watcher daemon.
+
+    Reads recent heartbeat / state_transition log records from
+    service_name=copilot-session-watcher in Loki, groups by
+    (host_name, session_id, session_epoch), keeps the newest per group, and
+    drops anything whose latest state is `ended`."""
+    now_ns = int(time.time() * 1_000_000_000)
+    start_ns = now_ns - WATCHER_FRESHNESS_SECONDS * 1_000_000_000
+    try:
+        data = query_loki_range(
+            '{service_name="copilot-session-watcher"}',
+            start_ns, now_ns, limit=5000)
+    except Exception as e:
+        return {
+            "sessions": [],
+            "queriedAt": _iso(now_ns),
+            "freshnessWindowSeconds": WATCHER_FRESHNESS_SECONDS,
+            "error": str(e),
+        }
+
+    latest = {}  # (host, sid, epoch) -> {ts_ns, stream-labels}
+    for stream in data.get("data", {}).get("result", []):
+        labels = stream.get("stream", {})
+        sid = labels.get("session_id")
+        if not sid:
+            continue
+        host = labels.get("host_name", "")
+        epoch = labels.get("session_epoch", "1")
+        try:
+            epoch_i = int(epoch)
+        except ValueError:
+            epoch_i = 1
+        key = (host, sid, epoch_i)
+        for ts_str, _line in stream.get("values", []):
+            try:
+                ts_ns = int(ts_str)
+            except ValueError:
+                continue
+            prev = latest.get(key)
+            if prev is None or ts_ns > prev["ts_ns"]:
+                latest[key] = {"ts_ns": ts_ns, "labels": labels}
+
+    sessions = []
+    for (host, sid, epoch), rec in latest.items():
+        labels = rec["labels"]
+        state = (labels.get("state_current") or "").lower()
+        if state == "ended":
+            continue
+        sessions.append({
+            "sessionId": sid,
+            "epoch": epoch,
+            "host": host,
+            "tool": labels.get("tool_name") or "unknown",
+            "state": state or "unknown",
+            "lastObservedAt": _iso(rec["ts_ns"]),
+            "lastObservedAgeSeconds": round((now_ns - rec["ts_ns"]) / 1e9, 1),
+            "serviceVersion": labels.get("service_version"),
+        })
+    sessions.sort(key=lambda s: (s["host"], s["tool"], s["sessionId"]))
+    return {
+        "sessions": sessions,
+        "queriedAt": _iso(now_ns),
+        "freshnessWindowSeconds": WATCHER_FRESHNESS_SECONDS,
+    }
+
+
+def _iso(ns):
+    """Nanosecond epoch -> RFC3339 string (UTC)."""
+    import datetime
+    return datetime.datetime.fromtimestamp(ns / 1e9, tz=datetime.timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +794,13 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/api/sessions", "/dashboard-api/sessions"):
             try:
                 return self._json_response(compute_sessions(lookback_hours))
+            except Exception as e:
+                return self._error(500, str(e))
+
+        # Watcher state: current live + orphan sessions from the daemon
+        if path in ("/api/sessions/state", "/dashboard-api/sessions/state"):
+            try:
+                return self._json_response(get_watcher_state())
             except Exception as e:
                 return self._error(500, str(e))
 

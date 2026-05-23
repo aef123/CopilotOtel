@@ -6,6 +6,7 @@ import type {
   ModelUsage,
   ToolUsage,
   ApiSpan,
+  WatcherStateResponse,
 } from "./types";
 
 const BASE = "/dashboard-api";
@@ -123,6 +124,12 @@ export async function getDebugSession(
   token?: string | null
 ): Promise<any> {
   return fetchJson<any>(`/debug/session/${sessionId}`, token);
+}
+
+export async function getWatcherState(
+  token?: string | null
+): Promise<WatcherStateResponse> {
+  return fetchJson<WatcherStateResponse>("/sessions/state", token);
 }
 
 

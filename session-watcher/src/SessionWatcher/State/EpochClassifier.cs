@@ -4,8 +4,12 @@ public enum EpochState
 {
     /// <summary>Initial state — daemon has discovered a pidfile/lock but hasn't yet validated it.</summary>
     Opening,
-    /// <summary>Pidfile/lock present and owning PID alive (image validation passed).</summary>
+    /// <summary>Owning PID alive; tool didn't expose a busy/idle hint (Copilot).</summary>
     Live,
+    /// <summary>Owning PID alive AND tool reports it's actively working (Claude pidfile status=busy).</summary>
+    Active,
+    /// <summary>Owning PID alive AND tool reports it's idle (Claude pidfile status=idle).</summary>
+    Idle,
     /// <summary>Pidfile/lock present but owning PID dead or image mismatch.</summary>
     Orphan,
     /// <summary>Epoch closed. Terminal.</summary>

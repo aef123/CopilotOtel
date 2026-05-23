@@ -11,27 +11,38 @@ namespace SessionWatcher.Sources.Copilot;
 /// </summary>
 public sealed class CopilotSource
 {
+    private static readonly IReadOnlyList<string> CopilotImages =
+        new[] { "copilot", "copilot.exe", "agency", "agency.exe" };
+
     private readonly string _sessionStateRoot;
     private readonly IProcessProbe _probe;
+    private readonly IClock _clock;
+    private readonly TimeSpan _orphanTimeout;
     private readonly Dictionary<string, Tracker> _epochs = new(StringComparer.Ordinal);
     private readonly string _host = Environment.MachineName;
 
-    public CopilotSource(string sessionStateRoot, IProcessProbe probe)
+    public CopilotSource(
+        string sessionStateRoot,
+        IProcessProbe probe,
+        IClock? clock = null,
+        TimeSpan? orphanTimeout = null)
     {
         _sessionStateRoot = sessionStateRoot;
         _probe = probe;
+        _clock = clock ?? new SystemClock();
+        _orphanTimeout = orphanTimeout ?? TimeSpan.FromMinutes(5);
     }
 
     public void PollOnce(IEpochEventSink sink)
     {
-        var observedAt = DateTimeOffset.UtcNow;
+        var observedAt = _clock.UtcNow;
         var seenSessions = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var (sessionId, pid) in EnumerateLiveLocks())
         {
             seenSessions.Add(sessionId);
             var tracker = GetOrCreateTracker(sessionId, pid);
-            var alive = _probe.IsAlive(pid);
+            var alive = _probe.IsAlive(pid, CopilotImages);
             ApplyObservation(tracker, lockPresent: true, alive, observedAt, sink);
         }
 
@@ -102,7 +113,28 @@ public sealed class CopilotSource
         if (result.Transitioned)
         {
             sink.OnTransition(snapshot, tracker.LastState, result.NewState, result.ShutdownType);
+
+            if (result.NewState == EpochState.Orphan && tracker.OrphanFirstSeenAt is null)
+            {
+                tracker.OrphanFirstSeenAt = observedAt;
+                tracker.OrphanTimedOut = false;
+            }
+            else if (result.NewState != EpochState.Orphan)
+            {
+                tracker.OrphanFirstSeenAt = null;
+                tracker.OrphanTimedOut = false;
+            }
+
             tracker.LastState = result.NewState;
+        }
+
+        if (result.NewState == EpochState.Orphan
+            && !tracker.OrphanTimedOut
+            && tracker.OrphanFirstSeenAt is { } firstSeen
+            && observedAt - firstSeen >= _orphanTimeout)
+        {
+            sink.OnOrphanTimeout(snapshot);
+            tracker.OrphanTimedOut = true;
         }
 
         if (result.NewState is EpochState.Live or EpochState.Orphan)
@@ -117,6 +149,8 @@ public sealed class CopilotSource
         public int Pid { get; }
         public int EpochIndex { get; init; } = 1;
         public EpochState LastState { get; set; } = EpochState.Opening;
+        public DateTimeOffset? OrphanFirstSeenAt { get; set; }
+        public bool OrphanTimedOut { get; set; }
 
         public Tracker(string sessionId, int pid) { SessionId = sessionId; Pid = pid; }
     }

@@ -6,6 +6,10 @@ namespace SessionWatcher.Diagnostics;
 /// </summary>
 public interface IProcessProbe
 {
-    /// <summary>True if a process with the given PID currently exists.</summary>
-    bool IsAlive(int pid);
+    /// <summary>True if a process with the given PID currently exists AND, when
+    /// <paramref name="allowedImageNames"/> is non-empty, its base process name
+    /// matches one of them (case-insensitive). Image-name validation closes the
+    /// PID-reuse blind spot: a recycled PID owned by a different program is
+    /// reported as not-alive from the daemon's perspective.</summary>
+    bool IsAlive(int pid, IReadOnlyList<string>? allowedImageNames = null);
 }

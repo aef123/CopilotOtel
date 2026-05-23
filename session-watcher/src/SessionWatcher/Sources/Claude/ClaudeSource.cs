@@ -10,20 +10,30 @@ namespace SessionWatcher.Sources.Claude;
 /// </summary>
 public sealed class ClaudeSource
 {
+    private static readonly IReadOnlyList<string> ClaudeImages = new[] { "claude", "claude.exe" };
+
     private readonly string _sessionsDir;
     private readonly IProcessProbe _probe;
+    private readonly IClock _clock;
+    private readonly TimeSpan _orphanTimeout;
     private readonly Dictionary<string, Tracker> _epochs = new(StringComparer.Ordinal);
     private readonly string _host = Environment.MachineName;
 
-    public ClaudeSource(string sessionsDir, IProcessProbe probe)
+    public ClaudeSource(
+        string sessionsDir,
+        IProcessProbe probe,
+        IClock? clock = null,
+        TimeSpan? orphanTimeout = null)
     {
         _sessionsDir = sessionsDir;
         _probe = probe;
+        _clock = clock ?? new SystemClock();
+        _orphanTimeout = orphanTimeout ?? TimeSpan.FromMinutes(5);
     }
 
     public void PollOnce(IEpochEventSink sink)
     {
-        var observedAt = DateTimeOffset.UtcNow;
+        var observedAt = _clock.UtcNow;
         var seenSessionIds = new HashSet<string>(StringComparer.Ordinal);
 
         var pidfiles = EnumeratePidfiles();
@@ -31,7 +41,7 @@ public sealed class ClaudeSource
         {
             seenSessionIds.Add(pidfile.SessionId);
             var tracker = GetOrCreateTracker(pidfile, path);
-            var alive = _probe.IsAlive(pidfile.Pid);
+            var alive = _probe.IsAlive(pidfile.Pid, ClaudeImages);
             ApplyObservation(tracker, pidfile, alive, observedAt, sink);
         }
 
@@ -81,21 +91,58 @@ public sealed class ClaudeSource
             tracker.LastState,
             new Observation(PidfilePresent: pidfile is not null, PidAlive: alive));
 
-        snapshot = snapshot with { State = result.NewState };
+        // Refine Live → Active/Idle using the Claude pidfile's status hint.
+        var refinedState = RefineFromStatus(result.NewState, pidfile?.Status);
 
-        if (result.Transitioned)
+        snapshot = snapshot with { State = refinedState };
+
+        // Compare with previous *refined* state so a busy→idle transition still counts.
+        var transitioned = refinedState != tracker.LastState;
+        if (transitioned)
         {
-            sink.OnTransition(snapshot, tracker.LastState, result.NewState, result.ShutdownType);
-            tracker.LastState = result.NewState;
+            sink.OnTransition(snapshot, tracker.LastState, refinedState, result.ShutdownType);
+
+            if (refinedState == EpochState.Orphan && tracker.OrphanFirstSeenAt is null)
+            {
+                tracker.OrphanFirstSeenAt = observedAt;
+                tracker.OrphanTimedOut = false;
+            }
+            else if (refinedState != EpochState.Orphan)
+            {
+                tracker.OrphanFirstSeenAt = null;
+                tracker.OrphanTimedOut = false;
+            }
+
+            tracker.LastState = refinedState;
             tracker.LastSnapshot = snapshot;
         }
 
-        if (result.NewState is EpochState.Live or EpochState.Orphan)
+        // Fire orphan-timeout once if the epoch has been Orphan long enough.
+        if (refinedState == EpochState.Orphan
+            && !tracker.OrphanTimedOut
+            && tracker.OrphanFirstSeenAt is { } firstSeen
+            && observedAt - firstSeen >= _orphanTimeout)
+        {
+            sink.OnOrphanTimeout(snapshot);
+            tracker.OrphanTimedOut = true;
+        }
+
+        if (refinedState is EpochState.Live or EpochState.Active or EpochState.Idle or EpochState.Orphan)
         {
             sink.OnHeartbeat(snapshot);
             tracker.LastSnapshot = snapshot;
         }
     }
+
+    private static EpochState RefineFromStatus(EpochState classified, string? status) =>
+        classified == EpochState.Live
+            ? (status?.ToLowerInvariant() switch
+            {
+                "busy" => EpochState.Active,
+                "idle" => EpochState.Idle,
+                _ => EpochState.Live,
+            })
+            : classified;
 
     private EpochSnapshot BuildSnapshot(Tracker tracker, ClaudePidfile? pidfile, DateTimeOffset at, EpochState placeholderState)
     {
@@ -133,6 +180,8 @@ public sealed class ClaudeSource
 
         public EpochState LastState { get; set; } = EpochState.Opening;
         public EpochSnapshot? LastSnapshot { get; set; }
+        public DateTimeOffset? OrphanFirstSeenAt { get; set; }
+        public bool OrphanTimedOut { get; set; }
 
         public Tracker(string sessionId, int pid, string pidfilePath)
         {

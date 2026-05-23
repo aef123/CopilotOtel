@@ -15,7 +15,10 @@ services:
     restart: unless-stopped
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    # Pinned: :latest floats and a newer point release dropped Claude's
+    # delta-temporality sums silently for ~7 days before being noticed.
+    # Bump deliberately, never via :latest auto-pull.
+    image: otel/opentelemetry-collector-contrib:0.139.0
     volumes:
       - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
     environment:
