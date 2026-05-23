@@ -93,6 +93,14 @@ Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 [Environment]::SetEnvironmentVariable("CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1", "User")
 [Environment]::SetEnvironmentVariable("OTEL_TRACES_EXPORTER", "otlp", "User")
 
+# Capture prompt + tool detail content. Without these, the span attribute
+# `user_prompt` arrives as the literal string "<REDACTED>" and `tool_input`
+# values come through as length-only. These are the same flags Set-OtelEnv.ps1
+# sets per-shell; persisting at User scope so Task Scheduler-launched and
+# default-launched Claude/Copilot sessions both get them.
+[Environment]::SetEnvironmentVariable("OTEL_LOG_USER_PROMPTS", "1", "User")
+[Environment]::SetEnvironmentVariable("OTEL_LOG_TOOL_DETAILS", "1", "User")
+
 # Force CUMULATIVE temporality for sums/counters. Prometheus remote-write only
 # accepts cumulative; the OTel JS SDK (used by Claude Code) defaults to delta,
 # which is silently dropped by the prometheusremotewrite exporter. Setting this

@@ -101,15 +101,18 @@ export function SessionDetail() {
 
       <h2>Prompts / Turns</h2>
       {detail.turns.length === 0 ? (
-        <div className="empty-state">No turns recorded yet (data may have expired from Tempo)</div>
+        <div className="empty-state">No traces in Tempo for this session yet. The watcher daemon has it open; turn-level detail will appear once Claude/Copilot emit spans for it.</div>
       ) : (
         <table className="data-table">
           <thead>
             <tr>
               <th>#</th>
+              <th>Prompt</th>
               <th>Model</th>
-              <th>Input Tokens</th>
-              <th>Output Tokens</th>
+              <th>In</th>
+              <th>Out</th>
+              <th>Cache R</th>
+              <th>Cache W</th>
               <th>Duration</th>
               <th>Started</th>
               <th></th>
@@ -118,15 +121,21 @@ export function SessionDetail() {
           <tbody>
             {detail.turns.map((t, i) => {
               const grafanaUrl = `${GRAFANA_BASE}/explore?left={"datasource":"P214B5B846CF3925F","queries":[{"refId":"A","queryType":"traceql","query":"${t.traceId}"}],"range":{"from":"now-6h","to":"now"}}`;
+              const promptText = t.userPrompt && t.userPrompt !== "<REDACTED>"
+                ? (t.userPrompt.length > 80 ? t.userPrompt.slice(0, 77) + "…" : t.userPrompt)
+                : (t.userPromptLength ? `<${t.userPromptLength}-char prompt — enable OTEL_LOG_USER_PROMPTS=1>` : "");
               return (
                 <tr
                   key={t.spanId}
                   onClick={() => nav(`/sessions/${sessionId}/traces/${t.traceId}`)}
                 >
-                  <td>{i + 1}</td>
+                  <td>{t.sequence || (i + 1)}</td>
+                  <td title={t.userPrompt} style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: t.userPrompt && t.userPrompt !== "<REDACTED>" ? "var(--text-primary)" : "var(--text-muted)" }}>{promptText}</td>
                   <td>{t.model || "N/A"}</td>
                   <td>{formatTokens(t.inputTokens)}</td>
                   <td>{formatTokens(t.outputTokens)}</td>
+                  <td>{formatTokens(t.cacheReadTokens || 0)}</td>
+                  <td>{formatTokens(t.cacheCreationTokens || 0)}</td>
                   <td>{formatDuration(t.durationMs)}</td>
                   <td>{formatTime(t.startTime)}</td>
                   <td>

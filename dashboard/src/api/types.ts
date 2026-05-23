@@ -19,6 +19,11 @@ export interface Turn {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  userPrompt?: string;
+  userPromptLength?: number;
+  sequence?: number;
   startTime: string;
   durationMs: number;
 }

@@ -63,6 +63,11 @@ function mapTurn(raw: any): any {
     model: raw.model || "",
     inputTokens: raw.input_tokens || 0,
     outputTokens: raw.output_tokens || 0,
+    cacheReadTokens: raw.cache_read_tokens || 0,
+    cacheCreationTokens: raw.cache_creation_tokens || 0,
+    userPrompt: raw.user_prompt || "",
+    userPromptLength: raw.user_prompt_length || 0,
+    sequence: raw.sequence || 0,
     startTime: new Date(raw.start_time_unix_nano ? raw.start_time_unix_nano / 1e6 : raw.start_time).toISOString(),
     durationMs: raw.duration_ms || (raw.duration_s ? raw.duration_s * 1000 : 0),
   };

@@ -292,9 +292,16 @@ def query_recent_metric_activity():
     return active
 
 
+def _span_session_id(span):
+    """Claude Code emits session.id; Copilot emits gen_ai.conversation.id.
+    Either is sufficient — they're the conversation/session key."""
+    return (get_attr(span, "gen_ai.conversation.id")
+            or get_attr(span, "session.id"))
+
+
 def compute_sessions(lookback_hours=None):
     lh = lookback_hours or LOOKBACK_HOURS
-    # Query both Copilot and Claude root spans (invoke_agent)
+    # Copilot's per-turn root span (older shape: gen_ai semconv)
     copilot_data = query_tempo(
         '{resource.service.name="github-copilot" && name="invoke_agent"}'
         ' | select(span.gen_ai.conversation.id, span.gen_ai.agent.version,'
@@ -302,6 +309,26 @@ def compute_sessions(lookback_hours=None):
         ' span.gen_ai.usage.output_tokens, resource.host.name)',
         lookback_hours=lh,
     )
+    # Claude Code's per-prompt root span (new beta tracing shape) — one span
+    # per user interaction, carries session.id + user_prompt + duration.
+    # The llm_request child spans carry token counts and model name.
+    claude_interactions = query_tempo(
+        '{resource.service.name="claude-code" && name="claude_code.interaction"}'
+        ' | select(span.session.id, span.gen_ai.conversation.id,'
+        ' span.user_prompt, span.user_prompt_length,'
+        ' span.interaction.sequence, resource.host.name)',
+        lookback_hours=lh,
+    )
+    claude_llm = query_tempo(
+        '{resource.service.name="claude-code" && name="claude_code.llm_request"}'
+        ' | select(span.session.id, span.gen_ai.conversation.id,'
+        ' span.gen_ai.request.model, span.input_tokens,'
+        ' span.cache_read_tokens, span.cache_creation_tokens,'
+        ' resource.host.name)',
+        lookback_hours=lh,
+    )
+    # Generic Claude fallback for installations without the beta tracing flag
+    # (in case they emit the older gen_ai-style spans).
     claude_data = query_tempo(
         '{resource.service.name=~"claude.*"}'
         ' | select(span.gen_ai.conversation.id, span.gen_ai.response.model,'
@@ -336,25 +363,28 @@ def compute_sessions(lookback_hours=None):
     })
     children_max = defaultdict(int)
 
-    def process_spans(data, source_name):
+    def process_spans(data, source_name, is_root):
+        """is_root=True means each span counts as a turn AND seeds the session."""
         for trace in data.get("traces", []):
             trace_id = trace.get("traceID", "")
             for ss in trace.get("spanSets", []):
                 for span in ss.get("spans", []):
-                    sid = get_attr(span, "gen_ai.conversation.id")
+                    sid = _span_session_id(span)
                     if not sid:
                         continue
                     t = int(span["startTimeUnixNano"]) // 1_000_000
                     dur = int(span.get("durationNanos", 0))
                     end_t = t + dur // 1_000_000
                     rec = sessions[sid]
-                    rec["turns"] += 1
+                    if is_root:
+                        rec["turns"] += 1
                     rec["min_time"] = min(rec["min_time"], t)
                     if trace_id:
                         rec["trace_ids"].add(trace_id)
                     if end_t > rec["max_time"]:
                         rec["max_time"] = end_t
-                        rec["duration_ns"] = dur
+                        if is_root:
+                            rec["duration_ns"] = dur
                     if source_name and not rec["source"]:
                         rec["source"] = source_name
                     ver = get_attr(span, "gen_ai.agent.version")
@@ -363,10 +393,15 @@ def compute_sessions(lookback_hours=None):
                     host = get_attr(span, "host.name")
                     if host:
                         rec["host"] = host
-                    model = get_attr(span, "gen_ai.response.model")
+                    # Copilot puts model on root; Claude puts it on llm_request
+                    model = (get_attr(span, "gen_ai.response.model")
+                             or get_attr(span, "gen_ai.request.model")
+                             or get_attr(span, "model"))
                     if model:
                         rec["model"] = model
-                    inp = get_attr(span, "gen_ai.usage.input_tokens")
+                    # Token-attribute names differ across tools/span types
+                    inp = (get_attr(span, "gen_ai.usage.input_tokens")
+                           or get_attr(span, "input_tokens"))
                     if inp:
                         try:
                             rec["total_input_tokens"] += int(inp)
@@ -379,8 +414,10 @@ def compute_sessions(lookback_hours=None):
                         except (ValueError, TypeError):
                             pass
 
-    process_spans(copilot_data, "Copilot")
-    process_spans(claude_data, "Claude")
+    process_spans(copilot_data, "Copilot", is_root=True)
+    process_spans(claude_data, "Claude", is_root=True)
+    process_spans(claude_interactions, "Claude", is_root=True)
+    process_spans(claude_llm, "Claude", is_root=False)
 
     # Build trace_id -> session_id map from invoke_agent spans
     trace_to_session = {}
@@ -394,7 +431,7 @@ def compute_sessions(lookback_hours=None):
         trace_id = trace.get("traceID", "")
         for ss in trace.get("spanSets", []):
             for span in ss.get("spans", []):
-                sid = get_attr(span, "gen_ai.conversation.id")
+                sid = _span_session_id(span)
                 model = get_attr(span, "gen_ai.response.model")
                 if sid and trace_id:
                     trace_to_session[trace_id] = sid
@@ -408,7 +445,7 @@ def compute_sessions(lookback_hours=None):
             trace_id = trace.get("traceID", "")
             for ss in trace.get("spanSets", []):
                 for span in ss.get("spans", []):
-                    sid = get_attr(span, "gen_ai.conversation.id")
+                    sid = _span_session_id(span)
                     if not sid:
                         sid = trace_to_session.get(trace_id)
                     if not sid:
@@ -512,6 +549,54 @@ def compute_sessions(lookback_hours=None):
             "cli_version": c["version"] if c else "",
         })
 
+    # Merge in sessions known to the watcher daemon but not yet seen in Tempo
+    # (newly opened sessions, or sessions whose tool emits no traces).
+    seen_ids = {r["session_id"] for r in rows}
+    try:
+        watcher = get_watcher_state().get("sessions", [])
+    except Exception:
+        watcher = []
+    now_ms = int(time.time() * 1000)
+    for ws in watcher:
+        sid = ws["sessionId"]
+        if sid in seen_ids:
+            # Tempo had data; just tag the row with the watcher's view of state.
+            for r in rows:
+                if r["session_id"] == sid:
+                    r["watcher_state"] = ws.get("state")
+                    r["watcher_host"] = ws.get("host")
+                    r["watcher_tool"] = ws.get("tool")
+                    if not r.get("host"):
+                        r["host"] = ws.get("host", "")
+                    if not r.get("source"):
+                        r["source"] = (ws.get("tool") or "").capitalize()
+            continue
+        # Watcher knows a session Tempo doesn't — surface it from the daemon.
+        watcher_state = (ws.get("state") or "").lower()
+        status = {
+            "active": "Active",
+            "idle": "Idle",
+            "live": "Active",
+            "orphan": "Orphan",
+        }.get(watcher_state, "Unknown")
+        rows.append({
+            "session_id": sid,
+            "status": status,
+            "source": (ws.get("tool") or "").capitalize(),
+            "host": ws.get("host", ""),
+            "model": "",
+            "last_activity": now_ms,  # newly observed
+            "first_seen": now_ms,
+            "turns": 0,
+            "last_turn_duration_s": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "cli_version": ws.get("serviceVersion", ""),
+            "watcher_state": ws.get("state"),
+            "watcher_host": ws.get("host"),
+            "watcher_tool": ws.get("tool"),
+        })
+
     rows.sort(key=lambda r: r["last_activity"], reverse=True)
     return rows
 
@@ -521,7 +606,7 @@ def compute_sessions(lookback_hours=None):
 # ---------------------------------------------------------------------------
 
 def get_session_detail(session_id):
-    # Query both Copilot and Claude root spans for this session
+    # Copilot's per-turn root spans for this session
     copilot_turns = query_tempo(
         '{resource.service.name="github-copilot" && name="invoke_agent"'
         f' && span.gen_ai.conversation.id="{session_id}"}}'
@@ -529,12 +614,27 @@ def get_session_detail(session_id):
         ' span.gen_ai.usage.output_tokens, span.gen_ai.agent.version,'
         ' resource.host.name)'
     )
+    # Claude older shape (pre-beta) if any
     claude_turns = query_tempo(
         '{resource.service.name=~"claude.*"'
         f' && span.gen_ai.conversation.id="{session_id}"}}'
         ' | select(span.gen_ai.response.model, span.gen_ai.usage.input_tokens,'
         ' span.gen_ai.usage.output_tokens, resource.host.name,'
         ' resource.service.name)'
+    )
+    # Claude new beta tracing — one span per user prompt + per LLM call + per tool
+    claude_interactions = query_tempo(
+        '{resource.service.name="claude-code" && name="claude_code.interaction"'
+        f' && (span.session.id="{session_id}" || span.gen_ai.conversation.id="{session_id}")}}'
+        ' | select(span.session.id, span.gen_ai.conversation.id,'
+        ' span.user_prompt, span.user_prompt_length,'
+        ' span.interaction.sequence, resource.host.name)'
+    )
+    claude_llm = query_tempo(
+        '{resource.service.name="claude-code" && name="claude_code.llm_request"'
+        f' && (span.session.id="{session_id}" || span.gen_ai.conversation.id="{session_id}")}}'
+        ' | select(span.gen_ai.request.model, span.input_tokens,'
+        ' span.cache_read_tokens, span.cache_creation_tokens)'
     )
     # Chat spans carry the model (invoke_agent often doesn't)
     chat_spans = query_tempo(
@@ -595,6 +695,54 @@ def get_session_detail(session_id):
 
     extract_turns(copilot_turns)
     extract_turns(claude_turns)
+
+    # Index Claude llm_request spans by trace_id so we can attach token totals
+    # + model name to the matching interaction.
+    llm_by_trace = {}
+    for trace in claude_llm.get("traces", []):
+        tid = trace.get("traceID", "")
+        for ss in trace.get("spanSets", []):
+            for span in ss.get("spans", []):
+                entry = llm_by_trace.setdefault(tid, {"input": 0, "output": 0,
+                                                       "cache_read": 0,
+                                                       "cache_create": 0,
+                                                       "model": ""})
+                try: entry["input"] += int(get_attr(span, "input_tokens") or 0)
+                except (ValueError, TypeError): pass
+                try: entry["cache_read"] += int(get_attr(span, "cache_read_tokens") or 0)
+                except (ValueError, TypeError): pass
+                try: entry["cache_create"] += int(get_attr(span, "cache_creation_tokens") or 0)
+                except (ValueError, TypeError): pass
+                m = get_attr(span, "gen_ai.request.model") or get_attr(span, "model")
+                if m: entry["model"] = m
+
+    # Convert Claude interaction spans into turn rows. Each interaction = 1
+    # user prompt, so it's the right granularity for the per-turn table.
+    for trace in claude_interactions.get("traces", []):
+        trace_id = trace.get("traceID", "")
+        for ss in trace.get("spanSets", []):
+            for span in ss.get("spans", []):
+                start_ns = int(span["startTimeUnixNano"])
+                dur_ns = int(span.get("durationNanos", 0))
+                h = get_attr(span, "host.name")
+                if h: host = h
+                llm = llm_by_trace.get(trace_id, {})
+                prompt = get_attr(span, "user_prompt") or ""
+                turns.append({
+                    "trace_id": trace_id,
+                    "span_id": span.get("spanID", ""),
+                    "start_time": start_ns // 1_000_000,
+                    "duration_s": round(dur_ns / 1e9, 1),
+                    "model": llm.get("model", ""),
+                    "input_tokens": llm.get("input", 0),
+                    "output_tokens": llm.get("output", 0),
+                    "cache_read_tokens": llm.get("cache_read", 0),
+                    "cache_creation_tokens": llm.get("cache_create", 0),
+                    "user_prompt": prompt,
+                    "user_prompt_length": int(get_attr(span, "user_prompt_length") or 0),
+                    "sequence": int(get_attr(span, "interaction.sequence") or 0),
+                })
+
     turns.sort(key=lambda t: t["start_time"])
     return {
         "session_id": session_id,
