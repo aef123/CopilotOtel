@@ -20,5 +20,4 @@ public sealed record EpochSnapshot(
     DateTimeOffset? StartedAt = null,
     string? ClaudeStatus = null,
     string? ClaudeKind = null,
-    string? ClaudeEntrypoint = null,
-    DateTimeOffset? ClosedAt = null);  // When session transitioned to Closed state
+    string? ClaudeEntrypoint = null);

@@ -211,7 +211,6 @@ public sealed class OtelSink : IEpochEventSink
             ["state.current"] = s.State.ToString().ToLowerInvariant(),
             ["observed_at"] = s.ObservedAt.ToString("O"),
         };
-        if (s.ClosedAt is not null) scope["closed_at"] = s.ClosedAt.Value.ToString("O");
         if (s.ClaudeStatus is not null) scope["claude.status"] = s.ClaudeStatus;
         if (s.Cwd is not null) scope["cwd"] = s.Cwd;
         return scope;

@@ -239,9 +239,6 @@ def get_watcher_state():
         state = (labels.get("state_current") or "").lower()
         if state == "ended":
             continue
-        # For closed sessions, use closed_at (when it transitioned to closed), not last observation time
-        last_obs_iso = labels.get("closed_at") if state == "closed" else None
-        last_activity = _iso_to_ms(last_obs_iso) if last_obs_iso else _iso_to_ms(_iso(rec["ts_ns"]))
         sessions.append({
             "sessionId": sid,
             "epoch": epoch,
@@ -251,7 +248,6 @@ def get_watcher_state():
             "lastObservedAt": _iso(rec["ts_ns"]),
             "lastObservedAgeSeconds": round((now_ns - rec["ts_ns"]) / 1e9, 1),
             "serviceVersion": labels.get("service_version"),
-            "lastActivityMs": last_activity,
         })
     sessions.sort(key=lambda s: (s["host"], s["tool"], s["sessionId"]))
     return {
@@ -619,8 +615,9 @@ def compute_sessions(lookback_hours=None):
             "closed": "Closed",
             "orphan": "Closed",  # backward-compat for daemons still emitting old label
         }.get(watcher_state, "Unknown")
-        # Use lastActivityMs from watcher (which is closed_at for closed sessions, or lastObservedAt otherwise)
-        last_activity = ws.get("lastActivityMs", now_ms)
+        # Use watcher's actual observation time, not query time, for closed sessions
+        last_obs_iso = ws.get("lastObservedAt", "")
+        last_activity = _iso_to_ms(last_obs_iso) if last_obs_iso else now_ms
         rows.append({
             "session_id": sid,
             "status": status,
