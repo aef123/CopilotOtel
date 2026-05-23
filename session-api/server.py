@@ -211,7 +211,15 @@ def get_watcher_state():
             "error": str(e),
         }
 
-    latest = {}  # (host, sid, epoch) -> {ts_ns, stream-labels}
+    # For each (host, sid, epoch), track:
+    #   max_ts_ns      = latest log timestamp (any state) — current "lastObservedAt"
+    #   max_labels     = labels of the stream that produced max_ts_ns — current state
+    #   closed_ts_list = timestamps from streams where state_current=closed
+    #   non_closed_max = max timestamp from streams where state != closed
+    # Each (state, ...) tuple is its own Loki stream, so a transition Live->Closed
+    # creates a new stream. The earliest log in a closed stream that comes AFTER
+    # the latest non-closed log is the actual transition moment.
+    latest = {}
     for stream in data.get("data", {}).get("result", []):
         labels = stream.get("stream", {})
         sid = labels.get("session_id")
@@ -224,29 +232,55 @@ def get_watcher_state():
         except ValueError:
             epoch_i = 1
         key = (host, sid, epoch_i)
+        is_closed_stream = (labels.get("state_current") or "").lower() == "closed"
+
+        if key not in latest:
+            latest[key] = {
+                "max_ts_ns": 0,
+                "max_labels": labels,
+                "closed_ts_list": [],
+                "non_closed_max": 0,
+            }
+        rec = latest[key]
+
         for ts_str, _line in stream.get("values", []):
             try:
                 ts_ns = int(ts_str)
             except ValueError:
                 continue
-            prev = latest.get(key)
-            if prev is None or ts_ns > prev["ts_ns"]:
-                latest[key] = {"ts_ns": ts_ns, "labels": labels}
+            if ts_ns > rec["max_ts_ns"]:
+                rec["max_ts_ns"] = ts_ns
+                rec["max_labels"] = labels
+            if is_closed_stream:
+                rec["closed_ts_list"].append(ts_ns)
+            elif ts_ns > rec["non_closed_max"]:
+                rec["non_closed_max"] = ts_ns
 
     sessions = []
     for (host, sid, epoch), rec in latest.items():
-        labels = rec["labels"]
+        labels = rec["max_labels"]
         state = (labels.get("state_current") or "").lower()
         if state == "ended":
             continue
+
+        # For currently-closed sessions, the "last activity" is the transition
+        # into closed (earliest closed-stream timestamp after the most recent
+        # non-closed log), not the latest heartbeat (which keeps refreshing).
+        if state == "closed" and rec["closed_ts_list"]:
+            after_open = [t for t in rec["closed_ts_list"] if t > rec["non_closed_max"]]
+            last_activity_ns = min(after_open) if after_open else min(rec["closed_ts_list"])
+        else:
+            last_activity_ns = rec["max_ts_ns"]
+
         sessions.append({
             "sessionId": sid,
             "epoch": epoch,
             "host": host,
             "tool": labels.get("tool_name") or "unknown",
             "state": state or "unknown",
-            "lastObservedAt": _iso(rec["ts_ns"]),
-            "lastObservedAgeSeconds": round((now_ns - rec["ts_ns"]) / 1e9, 1),
+            "lastObservedAt": _iso(rec["max_ts_ns"]),
+            "lastObservedAgeSeconds": round((now_ns - rec["max_ts_ns"]) / 1e9, 1),
+            "lastActivityMs": last_activity_ns // 1_000_000,
             "serviceVersion": labels.get("service_version"),
         })
     sessions.sort(key=lambda s: (s["host"], s["tool"], s["sessionId"]))
@@ -601,14 +635,17 @@ def compute_sessions(lookback_hours=None):
             "closed": "Closed",
             "orphan": "Closed",  # backward-compat for daemons still emitting old label
         }.get(watcher_state, "Unknown")
+        # For closed sessions, lastActivityMs is the transition time (frozen),
+        # not query time — so the dashboard shows "closed N minutes ago" correctly.
+        last_activity = ws.get("lastActivityMs") or now_ms
         rows.append({
             "session_id": sid,
             "status": status,
             "source": (ws.get("tool") or "").capitalize(),
             "host": ws.get("host", ""),
             "model": "",
-            "last_activity": now_ms,
-            "first_seen": now_ms,
+            "last_activity": last_activity,
+            "first_seen": last_activity,
             "turns": 0,
             "last_turn_duration_s": 0,
             "total_input_tokens": 0,
