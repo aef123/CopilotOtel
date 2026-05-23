@@ -105,11 +105,13 @@ public sealed class ClaudeSource
             if (refinedState == EpochState.Closed && tracker.OrphanFirstSeenAt is null)
             {
                 tracker.OrphanFirstSeenAt = observedAt;
+                tracker.ClosedAt = observedAt;
                 tracker.OrphanTimedOut = false;
             }
             else if (refinedState != EpochState.Closed)
             {
                 tracker.OrphanFirstSeenAt = null;
+                tracker.ClosedAt = null;
                 tracker.OrphanTimedOut = false;
             }
 
@@ -129,6 +131,11 @@ public sealed class ClaudeSource
 
         if (refinedState is EpochState.Live or EpochState.Active or EpochState.Idle or EpochState.Closed)
         {
+            // Add ClosedAt if we're in Closed state and have a tracking timestamp
+            if (refinedState == EpochState.Closed && tracker.ClosedAt is not null)
+            {
+                snapshot = snapshot with { ClosedAt = tracker.ClosedAt };
+            }
             sink.OnHeartbeat(snapshot);
             tracker.LastSnapshot = snapshot;
         }
@@ -182,6 +189,7 @@ public sealed class ClaudeSource
         public EpochSnapshot? LastSnapshot { get; set; }
         public DateTimeOffset? OrphanFirstSeenAt { get; set; }
         public bool OrphanTimedOut { get; set; }
+        public DateTimeOffset? ClosedAt { get; set; }  // When session transitioned to Closed
 
         public Tracker(string sessionId, int pid, string pidfilePath)
         {
