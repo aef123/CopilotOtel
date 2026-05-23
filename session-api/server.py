@@ -263,20 +263,6 @@ def _iso(ns):
     return datetime.datetime.fromtimestamp(ns / 1e9, tz=datetime.timezone.utc).isoformat()
 
 
-def _iso_to_ms(iso_str):
-    """ISO 8601 string -> milliseconds since epoch."""
-    if not iso_str:
-        return 0
-    import datetime
-    try:
-        # Handle both '2026-05-23T...' and '2026-05-23T...Z' formats
-        iso_str = iso_str.replace('Z', '+00:00')
-        dt = datetime.datetime.fromisoformat(iso_str)
-        return int(dt.timestamp() * 1000)
-    except Exception:
-        return 0
-
-
 # ---------------------------------------------------------------------------
 # Session computation (enriched)
 # ---------------------------------------------------------------------------
@@ -615,17 +601,14 @@ def compute_sessions(lookback_hours=None):
             "closed": "Closed",
             "orphan": "Closed",  # backward-compat for daemons still emitting old label
         }.get(watcher_state, "Unknown")
-        # Use watcher's actual observation time, not query time, for closed sessions
-        last_obs_iso = ws.get("lastObservedAt", "")
-        last_activity = _iso_to_ms(last_obs_iso) if last_obs_iso else now_ms
         rows.append({
             "session_id": sid,
             "status": status,
             "source": (ws.get("tool") or "").capitalize(),
             "host": ws.get("host", ""),
             "model": "",
-            "last_activity": last_activity,
-            "first_seen": last_activity,
+            "last_activity": now_ms,
+            "first_seen": now_ms,
             "turns": 0,
             "last_turn_duration_s": 0,
             "total_input_tokens": 0,
