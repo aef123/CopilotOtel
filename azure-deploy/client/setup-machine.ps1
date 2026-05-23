@@ -81,25 +81,37 @@ Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 [Environment]::SetEnvironmentVariable("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf", "User")
 [Environment]::SetEnvironmentVariable("OTEL_RESOURCE_ATTRIBUTES", "host.name=$env:COMPUTERNAME", "User")
 
-# Claude Code specific
+# Claude Code: master enable + per-signal exporters
 [Environment]::SetEnvironmentVariable("CLAUDE_CODE_ENABLE_TELEMETRY", "1", "User")
 [Environment]::SetEnvironmentVariable("OTEL_METRICS_EXPORTER", "otlp", "User")
 [Environment]::SetEnvironmentVariable("OTEL_LOGS_EXPORTER", "otlp", "User")
 
-# Traces (a.k.a. distributed tracing / spans). Off by default in Claude Code.
+# Claude Code traces (a.k.a. distributed tracing / spans). Off by default.
 # Per Anthropic's docs at https://code.claude.com/docs/en/monitoring-usage#traces-beta,
 # tracing requires BOTH the beta flag AND a traces exporter. Without these,
 # OTEL_LOG_TOOL_CONTENT is also a no-op (it's gated on tracing).
 [Environment]::SetEnvironmentVariable("CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1", "User")
 [Environment]::SetEnvironmentVariable("OTEL_TRACES_EXPORTER", "otlp", "User")
 
-# Capture prompt + tool detail content. Without these, the span attribute
-# `user_prompt` arrives as the literal string "<REDACTED>" and `tool_input`
-# values come through as length-only. These are the same flags Set-OtelEnv.ps1
-# sets per-shell; persisting at User scope so Task Scheduler-launched and
-# default-launched Claude/Copilot sessions both get them.
+# Capture user-prompt content + tool input/output. Without these, span
+# attributes like `user_prompt` arrive as "<REDACTED>" and tool args are
+# length-only. OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS / OTEL_LOG_TOOL_CONTENT
+# are Claude Code; OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT is the
+# gen_ai-semconv equivalent that Copilot CLI honors. Set all four so prompts
+# land on both tools.
 [Environment]::SetEnvironmentVariable("OTEL_LOG_USER_PROMPTS", "1", "User")
 [Environment]::SetEnvironmentVariable("OTEL_LOG_TOOL_DETAILS", "1", "User")
+[Environment]::SetEnvironmentVariable("OTEL_LOG_TOOL_CONTENT", "1", "User")
+[Environment]::SetEnvironmentVariable("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true", "User")
+
+# Copilot CLI: master enable + exporter type. Without COPILOT_OTEL_ENABLED
+# the Copilot binary emits nothing regardless of OTEL_* env vars.
+[Environment]::SetEnvironmentVariable("COPILOT_OTEL_ENABLED", "true", "User")
+[Environment]::SetEnvironmentVariable("COPILOT_OTEL_EXPORTER_TYPE", "otlp-http", "User")
+
+# Per-session label on metrics. The dashboard's compute_sessions groups
+# Prometheus series by gen_ai.conversation.id to detect "responding" state.
+[Environment]::SetEnvironmentVariable("OTEL_METRICS_INCLUDE_SESSION_ID", "true", "User")
 
 # Force CUMULATIVE temporality for sums/counters. Prometheus remote-write only
 # accepts cumulative; the OTel JS SDK (used by Claude Code) defaults to delta,
@@ -116,17 +128,27 @@ $env:CLAUDE_CODE_ENHANCED_TELEMETRY_BETA = "1"
 $env:OTEL_METRICS_EXPORTER = "otlp"
 $env:OTEL_LOGS_EXPORTER = "otlp"
 $env:OTEL_TRACES_EXPORTER = "otlp"
+$env:OTEL_LOG_USER_PROMPTS = "1"
+$env:OTEL_LOG_TOOL_DETAILS = "1"
+$env:OTEL_LOG_TOOL_CONTENT = "1"
+$env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "true"
+$env:COPILOT_OTEL_ENABLED = "true"
+$env:COPILOT_OTEL_EXPORTER_TYPE = "otlp-http"
+$env:OTEL_METRICS_INCLUDE_SESSION_ID = "true"
 $env:OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE = "cumulative"
 
-Write-Host "  OTEL_EXPORTER_OTLP_ENDPOINT                       = http://127.0.0.1:4318"
-Write-Host "  OTEL_EXPORTER_OTLP_PROTOCOL                       = http/protobuf"
-Write-Host "  OTEL_RESOURCE_ATTRIBUTES                          = host.name=$env:COMPUTERNAME"
-Write-Host "  CLAUDE_CODE_ENABLE_TELEMETRY                      = 1"
-Write-Host "  CLAUDE_CODE_ENHANCED_TELEMETRY_BETA               = 1   (enables traces)"
-Write-Host "  OTEL_METRICS_EXPORTER                             = otlp"
-Write-Host "  OTEL_LOGS_EXPORTER                                = otlp"
-Write-Host "  OTEL_TRACES_EXPORTER                              = otlp"
-Write-Host "  OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE = cumulative"
+Write-Host "  OTEL_EXPORTER_OTLP_ENDPOINT                          = http://127.0.0.1:4318"
+Write-Host "  OTEL_EXPORTER_OTLP_PROTOCOL                          = http/protobuf"
+Write-Host "  OTEL_RESOURCE_ATTRIBUTES                             = host.name=$env:COMPUTERNAME"
+Write-Host "  CLAUDE_CODE_ENABLE_TELEMETRY                         = 1"
+Write-Host "  CLAUDE_CODE_ENHANCED_TELEMETRY_BETA                  = 1   (enables Claude traces)"
+Write-Host "  OTEL_METRICS_EXPORTER / OTEL_LOGS_EXPORTER / OTEL_TRACES_EXPORTER = otlp"
+Write-Host "  OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS / OTEL_LOG_TOOL_CONTENT = 1"
+Write-Host "  OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT   = true  (Copilot prompts)"
+Write-Host "  COPILOT_OTEL_ENABLED                                 = true"
+Write-Host "  COPILOT_OTEL_EXPORTER_TYPE                           = otlp-http"
+Write-Host "  OTEL_METRICS_INCLUDE_SESSION_ID                      = true"
+Write-Host "  OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE    = cumulative"
 Write-Host "  (Set as persistent User environment variables)"
 
 # ──────────────────────────────────────────────
