@@ -86,6 +86,13 @@ Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 [Environment]::SetEnvironmentVariable("OTEL_METRICS_EXPORTER", "otlp", "User")
 [Environment]::SetEnvironmentVariable("OTEL_LOGS_EXPORTER", "otlp", "User")
 
+# Traces (a.k.a. distributed tracing / spans). Off by default in Claude Code.
+# Per Anthropic's docs at https://code.claude.com/docs/en/monitoring-usage#traces-beta,
+# tracing requires BOTH the beta flag AND a traces exporter. Without these,
+# OTEL_LOG_TOOL_CONTENT is also a no-op (it's gated on tracing).
+[Environment]::SetEnvironmentVariable("CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1", "User")
+[Environment]::SetEnvironmentVariable("OTEL_TRACES_EXPORTER", "otlp", "User")
+
 # Force CUMULATIVE temporality for sums/counters. Prometheus remote-write only
 # accepts cumulative; the OTel JS SDK (used by Claude Code) defaults to delta,
 # which is silently dropped by the prometheusremotewrite exporter. Setting this
@@ -97,16 +104,20 @@ $env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:4318"
 $env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
 $env:OTEL_RESOURCE_ATTRIBUTES = "host.name=$env:COMPUTERNAME"
 $env:CLAUDE_CODE_ENABLE_TELEMETRY = "1"
+$env:CLAUDE_CODE_ENHANCED_TELEMETRY_BETA = "1"
 $env:OTEL_METRICS_EXPORTER = "otlp"
 $env:OTEL_LOGS_EXPORTER = "otlp"
+$env:OTEL_TRACES_EXPORTER = "otlp"
 $env:OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE = "cumulative"
 
-Write-Host "  OTEL_EXPORTER_OTLP_ENDPOINT                    = http://localhost:4318"
-Write-Host "  OTEL_EXPORTER_OTLP_PROTOCOL                    = http/protobuf"
-Write-Host "  OTEL_RESOURCE_ATTRIBUTES                       = host.name=$env:COMPUTERNAME"
-Write-Host "  CLAUDE_CODE_ENABLE_TELEMETRY                   = 1"
-Write-Host "  OTEL_METRICS_EXPORTER                          = otlp"
-Write-Host "  OTEL_LOGS_EXPORTER                             = otlp"
+Write-Host "  OTEL_EXPORTER_OTLP_ENDPOINT                       = http://127.0.0.1:4318"
+Write-Host "  OTEL_EXPORTER_OTLP_PROTOCOL                       = http/protobuf"
+Write-Host "  OTEL_RESOURCE_ATTRIBUTES                          = host.name=$env:COMPUTERNAME"
+Write-Host "  CLAUDE_CODE_ENABLE_TELEMETRY                      = 1"
+Write-Host "  CLAUDE_CODE_ENHANCED_TELEMETRY_BETA               = 1   (enables traces)"
+Write-Host "  OTEL_METRICS_EXPORTER                             = otlp"
+Write-Host "  OTEL_LOGS_EXPORTER                                = otlp"
+Write-Host "  OTEL_TRACES_EXPORTER                              = otlp"
 Write-Host "  OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE = cumulative"
 Write-Host "  (Set as persistent User environment variables)"
 
