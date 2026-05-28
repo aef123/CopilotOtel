@@ -211,14 +211,15 @@ def get_watcher_state():
             "error": str(e),
         }
 
-    # For each (host, sid, epoch), track:
-    #   max_ts_ns      = latest log timestamp (any state) — current "lastObservedAt"
-    #   max_labels     = labels of the stream that produced max_ts_ns — current state
-    #   closed_ts_list = timestamps from streams where state_current=closed
-    #   non_closed_max = max timestamp from streams where state != closed
-    # Each (state, ...) tuple is its own Loki stream, so a transition Live->Closed
-    # creates a new stream. The earliest log in a closed stream that comes AFTER
-    # the latest non-closed log is the actual transition moment.
+    # For each (host, sid, epoch) we track the latest log timestamp (any state)
+    # for "lastObservedAt", plus the maximum `last_activity_at` value parsed
+    # from the log lines themselves. The daemon embeds the underlying
+    # lockfile/pidfile mtime in every heartbeat as `last_activity_at=<ISO>`,
+    # which is stable across daemon restarts and is what we want to surface
+    # as "last activity" for closed sessions.
+    import datetime as _dt
+    _LAST_ACTIVITY_RE = re.compile(r"last_activity_at=(\S+)")
+
     latest = {}
     for stream in data.get("data", {}).get("result", []):
         labels = stream.get("stream", {})
@@ -232,18 +233,16 @@ def get_watcher_state():
         except ValueError:
             epoch_i = 1
         key = (host, sid, epoch_i)
-        is_closed_stream = (labels.get("state_current") or "").lower() == "closed"
 
         if key not in latest:
             latest[key] = {
                 "max_ts_ns": 0,
                 "max_labels": labels,
-                "closed_ts_list": [],
-                "non_closed_max": 0,
+                "last_activity_ns": 0,
             }
         rec = latest[key]
 
-        for ts_str, _line in stream.get("values", []):
+        for ts_str, line in stream.get("values", []):
             try:
                 ts_ns = int(ts_str)
             except ValueError:
@@ -251,10 +250,18 @@ def get_watcher_state():
             if ts_ns > rec["max_ts_ns"]:
                 rec["max_ts_ns"] = ts_ns
                 rec["max_labels"] = labels
-            if is_closed_stream:
-                rec["closed_ts_list"].append(ts_ns)
-            elif ts_ns > rec["non_closed_max"]:
-                rec["non_closed_max"] = ts_ns
+
+            m = _LAST_ACTIVITY_RE.search(line or "")
+            if m:
+                try:
+                    iso = m.group(1)
+                    # Python's fromisoformat handles RFC3339 incl. offset in 3.11+.
+                    dt = _dt.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                    la_ns = int(dt.timestamp() * 1_000_000_000)
+                    if la_ns > rec["last_activity_ns"]:
+                        rec["last_activity_ns"] = la_ns
+                except (ValueError, OverflowError):
+                    pass
 
     sessions = []
     for (host, sid, epoch), rec in latest.items():
@@ -263,14 +270,10 @@ def get_watcher_state():
         if state == "ended":
             continue
 
-        # For currently-closed sessions, the "last activity" is the transition
-        # into closed (earliest closed-stream timestamp after the most recent
-        # non-closed log), not the latest heartbeat (which keeps refreshing).
-        if state == "closed" and rec["closed_ts_list"]:
-            after_open = [t for t in rec["closed_ts_list"] if t > rec["non_closed_max"]]
-            last_activity_ns = min(after_open) if after_open else min(rec["closed_ts_list"])
-        else:
-            last_activity_ns = rec["max_ts_ns"]
+        # Prefer the daemon-reported filesystem mtime (stable across restarts).
+        # Fall back to the latest heartbeat timestamp for back-compat with old
+        # log records that don't carry `last_activity_at=`.
+        last_activity_ns = rec["last_activity_ns"] or rec["max_ts_ns"]
 
         sessions.append({
             "sessionId": sid,
@@ -658,7 +661,15 @@ def compute_sessions(lookback_hours=None):
             "watcher_tool": ws.get("tool"),
         })
 
-    rows.sort(key=lambda r: r["last_activity"], reverse=True)
+    # Sort: active sessions (Responding/Active/Idle/Open) above Closed/Unknown,
+    # then by most-recent activity within each group.
+    def _status_rank(status):
+        s = (status or "").lower()
+        if s in ("responding", "active"): return 0
+        if s in ("idle", "open"): return 1
+        if s == "closed": return 2
+        return 3  # unknown / anything else last
+    rows.sort(key=lambda r: (_status_rank(r["status"]), -r["last_activity"]))
     return rows
 
 

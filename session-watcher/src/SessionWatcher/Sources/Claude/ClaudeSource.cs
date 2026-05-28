@@ -37,10 +37,11 @@ public sealed class ClaudeSource
         var seenSessionIds = new HashSet<string>(StringComparer.Ordinal);
 
         var pidfiles = EnumeratePidfiles();
-        foreach (var (path, pidfile) in pidfiles)
+        foreach (var (path, pidfile, mtime) in pidfiles)
         {
             seenSessionIds.Add(pidfile.SessionId);
             var tracker = GetOrCreateTracker(pidfile, path);
+            tracker.LastActivityAt = mtime;
             var alive = _probe.IsAlive(pidfile.Pid, ClaudeImages);
             ApplyObservation(tracker, pidfile, alive, observedAt, sink);
         }
@@ -54,18 +55,23 @@ public sealed class ClaudeSource
         }
     }
 
-    private IEnumerable<(string Path, ClaudePidfile Pidfile)> EnumeratePidfiles()
+    private IEnumerable<(string Path, ClaudePidfile Pidfile, DateTimeOffset Mtime)> EnumeratePidfiles()
     {
         if (!Directory.Exists(_sessionsDir)) yield break;
         foreach (var path in Directory.EnumerateFiles(_sessionsDir, "*.json"))
         {
             string text;
-            try { text = File.ReadAllText(path); }
+            DateTimeOffset mtime;
+            try
+            {
+                text = File.ReadAllText(path);
+                mtime = new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero);
+            }
             catch (IOException) { continue; }
             catch (UnauthorizedAccessException) { continue; }
 
             var parsed = ClaudePidfile.Parse(text);
-            if (parsed is not null) yield return (path, parsed);
+            if (parsed is not null) yield return (path, parsed, mtime);
         }
     }
 
@@ -159,6 +165,7 @@ public sealed class ClaudeSource
                 Cwd: pidfile.Cwd,
                 Version: pidfile.Version,
                 StartedAt: pidfile.StartedAt,
+                LastActivityAt: tracker.LastActivityAt,
                 ClaudeStatus: pidfile.Status,
                 ClaudeKind: pidfile.Kind,
                 ClaudeEntrypoint: pidfile.Entrypoint);
@@ -167,8 +174,8 @@ public sealed class ClaudeSource
         // Pidfile gone — carry forward what we last knew.
         var prev = tracker.LastSnapshot;
         return prev is null
-            ? new EpochSnapshot("claude", tracker.SessionId, tracker.Pid, tracker.EpochIndex, _host, placeholderState, at)
-            : prev with { State = placeholderState, ObservedAt = at };
+            ? new EpochSnapshot("claude", tracker.SessionId, tracker.Pid, tracker.EpochIndex, _host, placeholderState, at, LastActivityAt: tracker.LastActivityAt)
+            : prev with { State = placeholderState, ObservedAt = at, LastActivityAt = tracker.LastActivityAt ?? prev.LastActivityAt };
     }
 
     private sealed class Tracker
@@ -182,6 +189,7 @@ public sealed class ClaudeSource
         public EpochSnapshot? LastSnapshot { get; set; }
         public DateTimeOffset? OrphanFirstSeenAt { get; set; }
         public bool OrphanTimedOut { get; set; }
+        public DateTimeOffset? LastActivityAt { get; set; }
 
         public Tracker(string sessionId, int pid, string pidfilePath)
         {

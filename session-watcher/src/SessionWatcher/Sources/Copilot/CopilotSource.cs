@@ -38,10 +38,11 @@ public sealed class CopilotSource
         var observedAt = _clock.UtcNow;
         var seenSessions = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var (sessionId, pid) in EnumerateLiveLocks())
+        foreach (var (sessionId, pid, lockMtime) in EnumerateLiveLocks())
         {
             seenSessions.Add(sessionId);
             var tracker = GetOrCreateTracker(sessionId, pid);
+            tracker.LastActivityAt = lockMtime;
             var alive = _probe.IsAlive(pid, CopilotImages);
             ApplyObservation(tracker, lockPresent: true, alive, observedAt, sink);
         }
@@ -54,7 +55,7 @@ public sealed class CopilotSource
         }
     }
 
-    private IEnumerable<(string SessionId, int Pid)> EnumerateLiveLocks()
+    private IEnumerable<(string SessionId, int Pid, DateTimeOffset LastActivityAt)> EnumerateLiveLocks()
     {
         if (!Directory.Exists(_sessionStateRoot)) yield break;
         foreach (var dir in Directory.EnumerateDirectories(_sessionStateRoot))
@@ -71,7 +72,11 @@ public sealed class CopilotSource
             {
                 if (CopilotLockParser.TryParsePid(lockPath, out var pid))
                 {
-                    yield return (sessionId, pid);
+                    DateTimeOffset mtime;
+                    try { mtime = new DateTimeOffset(File.GetLastWriteTimeUtc(lockPath), TimeSpan.Zero); }
+                    catch (IOException) { mtime = _clock.UtcNow; }
+                    catch (UnauthorizedAccessException) { mtime = _clock.UtcNow; }
+                    yield return (sessionId, pid, mtime);
                     break; // one lock per session is the normal case
                 }
             }
@@ -102,7 +107,8 @@ public sealed class CopilotSource
             Epoch: tracker.EpochIndex,
             Host: _host,
             State: tracker.LastState,
-            ObservedAt: observedAt);
+            ObservedAt: observedAt,
+            LastActivityAt: tracker.LastActivityAt);
 
         var result = EpochClassifier.Classify(
             tracker.LastState,
@@ -151,6 +157,7 @@ public sealed class CopilotSource
         public EpochState LastState { get; set; } = EpochState.Opening;
         public DateTimeOffset? OrphanFirstSeenAt { get; set; }
         public bool OrphanTimedOut { get; set; }
+        public DateTimeOffset? LastActivityAt { get; set; }
 
         public Tracker(string sessionId, int pid) { SessionId = sessionId; Pid = pid; }
     }

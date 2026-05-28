@@ -22,7 +22,8 @@ internal sealed class RecordingSink : IEpochEventSink
             Tool: snapshot.Tool,
             SessionId: snapshot.SessionId,
             State: snapshot.State,
-            ClaudeStatus: snapshot.ClaudeStatus));
+            ClaudeStatus: snapshot.ClaudeStatus,
+            LastActivityAt: snapshot.LastActivityAt));
 
     public void OnOrphanTimeout(EpochSnapshot snapshot) =>
         OrphanTimeouts.Add(new RecordedOrphanTimeout(
@@ -34,6 +35,6 @@ internal sealed record RecordedTransition(
     string Tool, string SessionId, EpochState From, EpochState To, ShutdownType? ShutdownType);
 
 internal sealed record RecordedHeartbeat(
-    string Tool, string SessionId, EpochState State, string? ClaudeStatus);
+    string Tool, string SessionId, EpochState State, string? ClaudeStatus, DateTimeOffset? LastActivityAt = null);
 
 internal sealed record RecordedOrphanTimeout(string Tool, string SessionId);

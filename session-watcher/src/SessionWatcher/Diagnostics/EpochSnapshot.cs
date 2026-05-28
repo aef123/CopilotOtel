@@ -18,6 +18,10 @@ public sealed record EpochSnapshot(
     string? Cwd = null,
     string? Version = null,
     DateTimeOffset? StartedAt = null,
+    // Last moment the underlying tool itself touched its lockfile/pidfile.
+    // Stable across daemon restarts and heartbeat ticks — use this (not
+    // ObservedAt) when reporting "last activity" for closed sessions.
+    DateTimeOffset? LastActivityAt = null,
     string? ClaudeStatus = null,
     string? ClaudeKind = null,
     string? ClaudeEntrypoint = null);

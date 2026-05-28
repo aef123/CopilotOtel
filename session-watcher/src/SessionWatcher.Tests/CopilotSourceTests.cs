@@ -102,4 +102,24 @@ public class CopilotSourceTests : IDisposable
         var hb = Assert.Single(_sink.Heartbeats);
         Assert.Null(hb.ClaudeStatus);
     }
+
+    [Fact]
+    public void PollOnce_PopulatesLastActivityAtFromLockMtime()
+    {
+        CreateSessionDirWithLock("mtime-sid", 321);
+        _probe.SetAlive(321);
+
+        // Force a known mtime on the lock file (well before "now").
+        var lockPath = Path.Combine(_root, "mtime-sid", "inuse.321.lock");
+        var stableTime = new DateTime(2025, 1, 15, 10, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(lockPath, stableTime);
+
+        NewSource().PollOnce(_sink);
+
+        var hb = Assert.Single(_sink.Heartbeats);
+        Assert.NotNull(hb.LastActivityAt);
+        // Filesystem mtime precision varies; allow a small slack.
+        Assert.True(Math.Abs((hb.LastActivityAt!.Value.UtcDateTime - stableTime).TotalSeconds) < 2,
+            $"expected {stableTime:O}, got {hb.LastActivityAt:O}");
+    }
 }

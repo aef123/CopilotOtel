@@ -90,8 +90,9 @@ public sealed class OtelSink : IEpochEventSink
         using (_logger.BeginScope(BuildBaseScope(snapshot)))
         {
             _logger.LogInformation(
-                "heartbeat {Tool}/{SessionShort} state={State}",
-                snapshot.Tool, ShortId(snapshot.SessionId), snapshot.State);
+                "heartbeat {Tool}/{SessionShort} state={State} last_activity_at={LastActivityAt}",
+                snapshot.Tool, ShortId(snapshot.SessionId), snapshot.State,
+                (snapshot.LastActivityAt ?? snapshot.ObservedAt).ToString("O"));
         }
     }
 
@@ -210,6 +211,7 @@ public sealed class OtelSink : IEpochEventSink
             ["session.epoch"] = s.Epoch,
             ["state.current"] = s.State.ToString().ToLowerInvariant(),
             ["observed_at"] = s.ObservedAt.ToString("O"),
+            ["last_activity_at"] = (s.LastActivityAt ?? s.ObservedAt).ToString("O"),
         };
         if (s.ClaudeStatus is not null) scope["claude.status"] = s.ClaudeStatus;
         if (s.Cwd is not null) scope["cwd"] = s.Cwd;
