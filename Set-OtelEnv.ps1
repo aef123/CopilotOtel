@@ -3,15 +3,30 @@
 # to the OTel collector. Dot-source this before starting either tool.
 #
 # Usage:
-#   . .\Set-OtelEnv.ps1                              # defaults: localhost:4318
+#   . .\Set-OtelEnv.ps1                              # defaults: 127.0.0.1:4318
 #   . .\Set-OtelEnv.ps1 -Endpoint "http://myhost:4318"
+#   . .\Set-OtelEnv.ps1 -MachineName "afaust-laptop2"  # override host.name
 
 param(
-    [string]$Endpoint = "http://localhost:4318"
+    [string]$Endpoint = "http://127.0.0.1:4318",
+    # Friendly machine name for host.name. Cloud PC / VM hostnames are random
+    # ("CPC-foo-XXXXX") and meaningless; pass your own short name. Defaults to
+    # whatever's already on the User env (set by setup-machine.ps1), then to
+    # $env:COMPUTERNAME if nothing has ever been configured.
+    [string]$MachineName
 )
 
 # ── Shared OTLP endpoint ─────────────────────────────────────────────
 $env:OTEL_EXPORTER_OTLP_ENDPOINT = $Endpoint
+$env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
+
+# ── host.name ────────────────────────────────────────────────────────
+if (-not $MachineName) {
+    $existing = [Environment]::GetEnvironmentVariable("OTEL_RESOURCE_ATTRIBUTES", "User")
+    if ($existing -match 'host\.name=([^,]+)') { $MachineName = $matches[1].Trim() }
+    elseif (-not $MachineName) { $MachineName = $env:COMPUTERNAME }
+}
+$env:OTEL_RESOURCE_ATTRIBUTES = "host.name=$MachineName"
 
 # ── Copilot CLI ──────────────────────────────────────────────────────
 $env:COPILOT_OTEL_ENABLED       = "true"
@@ -49,6 +64,7 @@ $env:OTEL_TRACES_EXPORT_INTERVAL = "5000"
 # ── Summary ──────────────────────────────────────────────────────────
 Write-Host "OTel environment configured for both tools:" -ForegroundColor Green
 Write-Host "  Endpoint : $Endpoint"
+Write-Host "  Host     : $MachineName"
 Write-Host "  Copilot  : github-copilot (service name is built-in)"
 Write-Host "  Claude   : claude-code    (via OTEL_SERVICE_NAME)"
 Write-Host "  Signals  : metrics, traces, logs"

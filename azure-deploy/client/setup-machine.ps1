@@ -22,7 +22,13 @@ param(
     [string]$ClientId = "1fcf6578-502c-4a18-a8e0-ac55f1ed133a",
     [string]$ServerUrl = "https://otel.andrewfaust.com",
     [string]$ClientSecret,
-    [string]$ScriptDir = $PSScriptRoot
+    [string]$ScriptDir = $PSScriptRoot,
+    # Friendly machine name for host.name resource attribute. Cloud PC / VM
+    # hostnames are random and meaningless ("CPC-foo-XXXXX"); always pass your
+    # own short name. Defaults to whatever's already set on the machine so
+    # re-running the script doesn't clobber a name you set previously, falling
+    # back to $env:COMPUTERNAME only if nothing has ever been set.
+    [string]$MachineName
 )
 
 $ErrorActionPreference = "Stop"
@@ -79,7 +85,23 @@ Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 # Shared OTel variables (used by both Copilot CLI and Claude Code)
 [Environment]::SetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318", "User")
 [Environment]::SetEnvironmentVariable("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf", "User")
-[Environment]::SetEnvironmentVariable("OTEL_RESOURCE_ATTRIBUTES", "host.name=$env:COMPUTERNAME", "User")
+
+# host.name: prefer explicit -MachineName, else preserve existing User-scope value,
+# else fall back to $env:COMPUTERNAME. Cloud PC / VM hostnames are random
+# ("CPC-foo-XXXXX") and meaningless; users should pass their own short name.
+$existingResAttrs = [Environment]::GetEnvironmentVariable("OTEL_RESOURCE_ATTRIBUTES", "User")
+$existingHost = $null
+if ($existingResAttrs -match 'host\.name=([^,]+)') { $existingHost = $matches[1].Trim() }
+if ($MachineName) {
+    $hostName = $MachineName
+} elseif ($existingHost) {
+    $hostName = $existingHost
+    Write-Host "  Preserving existing host.name=$hostName (pass -MachineName to change)" -ForegroundColor DarkGray
+} else {
+    $hostName = $env:COMPUTERNAME
+    Write-Host "  No host.name set; defaulting to COMPUTERNAME=$hostName (pass -MachineName for a friendlier name)" -ForegroundColor Yellow
+}
+[Environment]::SetEnvironmentVariable("OTEL_RESOURCE_ATTRIBUTES", "host.name=$hostName", "User")
 
 # Claude Code: master enable + per-signal exporters
 [Environment]::SetEnvironmentVariable("CLAUDE_CODE_ENABLE_TELEMETRY", "1", "User")
@@ -122,7 +144,7 @@ Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
 # Also set in current session
 $env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:4318"
 $env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
-$env:OTEL_RESOURCE_ATTRIBUTES = "host.name=$env:COMPUTERNAME"
+$env:OTEL_RESOURCE_ATTRIBUTES = "host.name=$hostName"
 $env:CLAUDE_CODE_ENABLE_TELEMETRY = "1"
 $env:CLAUDE_CODE_ENHANCED_TELEMETRY_BETA = "1"
 $env:OTEL_METRICS_EXPORTER = "otlp"
@@ -139,7 +161,7 @@ $env:OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE = "cumulative"
 
 Write-Host "  OTEL_EXPORTER_OTLP_ENDPOINT                          = http://127.0.0.1:4318"
 Write-Host "  OTEL_EXPORTER_OTLP_PROTOCOL                          = http/protobuf"
-Write-Host "  OTEL_RESOURCE_ATTRIBUTES                             = host.name=$env:COMPUTERNAME"
+Write-Host "  OTEL_RESOURCE_ATTRIBUTES                             = host.name=$hostName"
 Write-Host "  CLAUDE_CODE_ENABLE_TELEMETRY                         = 1"
 Write-Host "  CLAUDE_CODE_ENHANCED_TELEMETRY_BETA                  = 1   (enables Claude traces)"
 Write-Host "  OTEL_METRICS_EXPORTER / OTEL_LOGS_EXPORTER / OTEL_TRACES_EXPORTER = otlp"
