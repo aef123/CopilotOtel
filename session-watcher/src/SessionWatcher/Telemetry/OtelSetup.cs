@@ -42,7 +42,7 @@ public static class OtelSetup
             .AddService(WatcherTelemetry.ServiceName, serviceVersion: WatcherTelemetry.ServiceVersion)
             .AddAttributes(new KeyValuePair<string, object>[]
             {
-                new("host.name", Environment.MachineName),
+                new("host.name", HostNameResolver.HostName),
             });
 
         services.AddOpenTelemetry()
@@ -50,7 +50,7 @@ public static class OtelSetup
                 .AddService(WatcherTelemetry.ServiceName, serviceVersion: WatcherTelemetry.ServiceVersion)
                 .AddAttributes(new KeyValuePair<string, object>[]
                 {
-                    new("host.name", Environment.MachineName),
+                    new("host.name", HostNameResolver.HostName),
                 }))
             .WithTracing(tb => tb
                 .AddSource(WatcherTelemetry.ActivitySourceName)

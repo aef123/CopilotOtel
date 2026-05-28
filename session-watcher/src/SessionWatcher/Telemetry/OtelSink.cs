@@ -15,7 +15,7 @@ namespace SessionWatcher.Telemetry;
 public sealed class OtelSink : IEpochEventSink
 {
     private readonly ILogger _logger;
-    private readonly string _host = Environment.MachineName;
+    private readonly string _host = HostNameResolver.HostName;
 
     // Per-epoch lifecycle Activities, keyed by (tool, sessionId, epoch).
     private readonly ConcurrentDictionary<string, Activity> _lifecycle = new();

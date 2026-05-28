@@ -1,5 +1,6 @@
 using SessionWatcher.Diagnostics;
 using SessionWatcher.State;
+using SessionWatcher.Telemetry;
 
 namespace SessionWatcher.Sources.Claude;
 
@@ -17,7 +18,7 @@ public sealed class ClaudeSource
     private readonly IClock _clock;
     private readonly TimeSpan _orphanTimeout;
     private readonly Dictionary<string, Tracker> _epochs = new(StringComparer.Ordinal);
-    private readonly string _host = Environment.MachineName;
+    private readonly string _host = HostNameResolver.HostName;
 
     public ClaudeSource(
         string sessionsDir,
