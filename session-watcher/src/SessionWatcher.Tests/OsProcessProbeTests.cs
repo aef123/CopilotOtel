@@ -51,4 +51,20 @@ public class OsProcessProbeTests
         var actualName = Process.GetCurrentProcess().ProcessName;
         Assert.True(probe.IsAlive(Environment.ProcessId, new[] { actualName + ".exe" }));
     }
+
+    [Fact]
+    public void IsAlive_AccessDeniedPid_ReturnsFalse()
+    {
+        // PID 4 is the Windows kernel "System" process. Process.GetProcessById(4)
+        // returns a Process object, but HasExited/ProcessName both throw
+        // Win32Exception(ERROR_ACCESS_DENIED=5) for non-admin callers. The probe
+        // must swallow that and report "not our process" rather than crashing the
+        // poll loop. Regression test for the Copilot source poll failure observed
+        // in the wild on stale lockfiles whose PIDs had been recycled by a
+        // protected process.
+        if (!OperatingSystem.IsWindows()) return;
+        var probe = new OsProcessProbe();
+        Assert.False(probe.IsAlive(4, new[] { "copilot", "claude" }));
+        Assert.False(probe.IsAlive(4));
+    }
 }
