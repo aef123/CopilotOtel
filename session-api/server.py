@@ -141,6 +141,33 @@ def get_attr(span, key):
     return None
 
 
+def _extract_last_user_text(messages_json):
+    """Copilot's gen_ai.input.messages is a JSON array of
+    {role, parts:[{type, content}]} entries. Return the most recent user
+    text content (the prompt that triggered this turn)."""
+    if not messages_json:
+        return ""
+    try:
+        msgs = json.loads(messages_json)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(msgs, list):
+        return ""
+    for msg in reversed(msgs):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        parts = msg.get("parts") or []
+        texts = []
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "text":
+                c = p.get("content")
+                if c:
+                    texts.append(str(c))
+        if texts:
+            return "\n".join(texts)
+    return ""
+
+
 def get_resource_attr(resource, key):
     for attr in resource.get("attributes", []):
         if attr["key"] == key:
@@ -343,7 +370,8 @@ def compute_sessions(lookback_hours=None):
         '{resource.service.name="github-copilot" && name="invoke_agent"}'
         ' | select(span.gen_ai.conversation.id, span.gen_ai.agent.version,'
         ' span.gen_ai.response.model, span.gen_ai.usage.input_tokens,'
-        ' span.gen_ai.usage.output_tokens, resource.host.name)',
+        ' span.gen_ai.usage.output_tokens, resource.host.name,'
+        ' span.gen_ai.input.messages)',
         lookback_hours=lh,
     )
     # Claude Code's per-prompt root span (new beta tracing shape) — one span
@@ -418,6 +446,25 @@ def compute_sessions(lookback_hours=None):
                         rec["last_prompt"] = prompt
                         rec["last_prompt_at"] = t
 
+    def _capture_copilot_last_prompt(data):
+        """Copilot's invoke_agent span carries the full conversation in
+        gen_ai.input.messages (JSON). The last user text part is the prompt
+        that triggered this turn."""
+        for trace in data.get("traces", []):
+            for ss in trace.get("spanSets", []):
+                for span in ss.get("spans", []):
+                    sid = _span_session_id(span)
+                    if not sid: continue
+                    raw = get_attr(span, "gen_ai.input.messages")
+                    if not raw: continue
+                    prompt = _extract_last_user_text(raw)
+                    if not prompt: continue
+                    t = int(span["startTimeUnixNano"]) // 1_000_000
+                    rec = sessions[sid]
+                    if t > rec.get("last_prompt_at", 0):
+                        rec["last_prompt"] = prompt
+                        rec["last_prompt_at"] = t
+
     def process_spans(data, source_name, is_root):
         """is_root=True means each span counts as a turn AND seeds the session."""
         for trace in data.get("traces", []):
@@ -474,6 +521,7 @@ def compute_sessions(lookback_hours=None):
     process_spans(claude_interactions, "Claude", is_root=True)
     process_spans(claude_llm, "Claude", is_root=False)
     _capture_last_prompt(claude_interactions)
+    _capture_copilot_last_prompt(copilot_data)
 
     # Build trace_id -> session_id map from invoke_agent spans
     trace_to_session = {}
