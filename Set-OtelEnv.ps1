@@ -44,8 +44,12 @@ $env:OTEL_LOGS_EXPORTER    = "otlp"
 $env:OTEL_TRACES_EXPORTER  = "otlp"
 $env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
 
-# Service name: "claude-code" so the dashboard can distinguish from Copilot
-$env:OTEL_SERVICE_NAME = "claude-code"
+# Service name: deliberately NOT set. This script configures BOTH tools in one
+# shell, and OTEL_SERVICE_NAME is shared — setting it to "claude-code" here would
+# also tag Copilot as "claude-code" if you ran `copilot` in the same shell, and
+# the dashboard would mislabel the session. Each tool already reports the right
+# service.name on its own: Claude Code defaults to "claude-code", Copilot CLI to
+# "github-copilot". Leave it unset so both report correctly side by side.
 
 # Privacy: capture prompts, tool details, and tool content
 $env:OTEL_LOG_USER_PROMPTS = "1"
@@ -66,7 +70,7 @@ Write-Host "OTel environment configured for both tools:" -ForegroundColor Green
 Write-Host "  Endpoint : $Endpoint"
 Write-Host "  Host     : $MachineName"
 Write-Host "  Copilot  : github-copilot (service name is built-in)"
-Write-Host "  Claude   : claude-code    (via OTEL_SERVICE_NAME)"
+Write-Host "  Claude   : claude-code    (service name is built-in)"
 Write-Host "  Signals  : metrics, traces, logs"
 Write-Host "  Content  : prompts, tool details, tool content"
 Write-Host ""
