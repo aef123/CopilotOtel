@@ -709,6 +709,21 @@ def compute_sessions(lookback_hours=None):
             "watcher_tool": ws.get("tool"),
         })
 
+    # Defensive lookback filter. Tempo's start/end should already bound the
+    # search window, and the watcher only returns sessions within
+    # WATCHER_FRESHNESS_SECONDS, but neither is bulletproof:
+    #   * Tempo can return traces from outside [start,end] when block_retention
+    #     exceeds the requested window or when TraceQL queries lack time
+    #     predicates.
+    #   * Watcher sessions are added with no per-session lookback check — only
+    #     a 5-minute heartbeat freshness — so their `lastActivityMs` (lockfile
+    #     mtime) can be days/weeks old for an idle but still-running CLI.
+    # Without this filter, picking "Last 6 hours" or "Last week" still surfaces
+    # sessions from much further back. Drop any row whose newest activity
+    # signal falls outside the requested window.
+    window_start_ms = now_ms - lh * 3600 * 1000
+    rows = [r for r in rows if r["last_activity"] >= window_start_ms]
+
     # Sort: active sessions (Responding/Active/Idle/Open) above Closed/Unknown,
     # then by most-recent activity within each group.
     def _status_rank(status):
@@ -953,25 +968,44 @@ def get_metrics_operations(lookback_hours=None):
     return series
 
 
-def get_metrics_models():
+def get_metrics_models(lookback_hours=None):
+    # Instant queries on a cumulative counter would return all-time totals,
+    # ignoring whatever lookback the user selected on the dashboard. Use
+    # increase() over the window so the donut reflects "tokens used in the
+    # selected window" instead of "tokens used since the metric was first
+    # scraped." `[Xh]` is computed from lookback_hours so 6h/24h/7d all work.
+    lh = lookback_hours or LOOKBACK_HOURS
+    window = f"{lh}h"
     result = query_prometheus(
-        'sum by (gen_ai_response_model) (gen_ai_client_token_usage_count)'
+        f'sum by (gen_ai_response_model) '
+        f'(increase(gen_ai_client_token_usage_count[{window}]))'
     )
     items = []
     for s in result.get("data", {}).get("result", []):
         model = s["metric"].get("gen_ai_response_model", "unknown")
-        items.append({"model": model, "totalInput": float(s["value"][1]), "totalOutput": 0, "count": 1})
+        val = float(s["value"][1])
+        if val <= 0:
+            continue
+        items.append({"model": model, "totalInput": val, "totalOutput": 0, "count": 1})
     return items
 
 
-def get_metrics_tools():
+def get_metrics_tools(lookback_hours=None):
+    # See get_metrics_models — same reasoning. Without the window the tool
+    # bar chart is frozen at all-time call counts regardless of the picker.
+    lh = lookback_hours or LOOKBACK_HOURS
+    window = f"{lh}h"
     result = query_prometheus(
-        'sum by (gen_ai_tool_name) (github_copilot_tool_call_count)'
+        f'sum by (gen_ai_tool_name) '
+        f'(increase(github_copilot_tool_call_count[{window}]))'
     )
     items = []
     for s in result.get("data", {}).get("result", []):
         tool = s["metric"].get("gen_ai_tool_name", "unknown")
-        items.append({"tool": tool, "count": float(s["value"][1]), "avgDurationMs": 0})
+        count = float(s["value"][1])
+        if count <= 0:
+            continue
+        items.append({"tool": tool, "count": count, "avgDurationMs": 0})
     items.sort(key=lambda x: x["count"], reverse=True)
     return items
 
@@ -1105,14 +1139,14 @@ class Handler(BaseHTTPRequestHandler):
         # Metrics: token usage by model (donut chart)
         if path == "/dashboard-api/metrics/models":
             try:
-                return self._json_response(get_metrics_models())
+                return self._json_response(get_metrics_models(lookback_hours))
             except Exception as e:
                 return self._error(500, str(e))
 
         # Metrics: tool call rate time series
         if path == "/dashboard-api/metrics/tools":
             try:
-                return self._json_response(get_metrics_tools())
+                return self._json_response(get_metrics_tools(lookback_hours))
             except Exception as e:
                 return self._error(500, str(e))
 

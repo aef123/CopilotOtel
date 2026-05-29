@@ -17,7 +17,9 @@ from collections import defaultdict
 
 TEMPO_URL = os.environ.get("TEMPO_URL", "http://tempo:3200")
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
+LOKI_URL = os.environ.get("LOKI_URL", "http://loki:3100")
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "24"))
+WATCHER_FRESHNESS_SECONDS = int(os.environ.get("WATCHER_FRESHNESS_SECONDS", "300"))
 IDLE_TIMEOUT_SECONDS = int(os.environ.get("IDLE_TIMEOUT_SECONDS", "300"))  # 5 minutes
 SKIP_AUTH = os.environ.get("SKIP_AUTH", "false").lower() == "true"
 TENANT_ID = os.environ.get("TENANT_ID", "")
@@ -139,6 +141,33 @@ def get_attr(span, key):
     return None
 
 
+def _extract_last_user_text(messages_json):
+    """Copilot's gen_ai.input.messages is a JSON array of
+    {role, parts:[{type, content}]} entries. Return the most recent user
+    text content (the prompt that triggered this turn)."""
+    if not messages_json:
+        return ""
+    try:
+        msgs = json.loads(messages_json)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(msgs, list):
+        return ""
+    for msg in reversed(msgs):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        parts = msg.get("parts") or []
+        texts = []
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "text":
+                c = p.get("content")
+                if c:
+                    texts.append(str(c))
+        if texts:
+            return "\n".join(texts)
+    return ""
+
+
 def get_resource_attr(resource, key):
     for attr in resource.get("attributes", []):
         if attr["key"] == key:
@@ -165,6 +194,137 @@ def query_prometheus_range(promql, start, end, step="60s"):
     url = f"{PROMETHEUS_URL}/api/v1/query_range?{urllib.parse.urlencode(params)}"
     resp = urllib.request.urlopen(urllib.request.Request(url), timeout=10)
     return json.loads(resp.read())
+
+
+# ---------------------------------------------------------------------------
+# Loki helpers
+# ---------------------------------------------------------------------------
+
+def query_loki_range(logql, start_ns, end_ns, limit=5000):
+    params = {
+        "query": logql,
+        "start": str(start_ns),
+        "end": str(end_ns),
+        "limit": str(limit),
+        "direction": "backward",
+    }
+    url = f"{LOKI_URL}/loki/api/v1/query_range?{urllib.parse.urlencode(params)}"
+    resp = urllib.request.urlopen(urllib.request.Request(url), timeout=15)
+    return json.loads(resp.read())
+
+
+# ---------------------------------------------------------------------------
+# Watcher state: latest per (host, session, epoch) from Loki
+# ---------------------------------------------------------------------------
+
+def get_watcher_state():
+    """Return the current live + orphan sessions known to the watcher daemon.
+
+    Reads recent heartbeat / state_transition log records from
+    service_name=copilot-session-watcher in Loki, groups by
+    (host_name, session_id, session_epoch), keeps the newest per group, and
+    drops anything whose latest state is `ended`."""
+    now_ns = int(time.time() * 1_000_000_000)
+    start_ns = now_ns - WATCHER_FRESHNESS_SECONDS * 1_000_000_000
+    try:
+        data = query_loki_range(
+            '{service_name="copilot-session-watcher"}',
+            start_ns, now_ns, limit=5000)
+    except Exception as e:
+        return {
+            "sessions": [],
+            "queriedAt": _iso(now_ns),
+            "freshnessWindowSeconds": WATCHER_FRESHNESS_SECONDS,
+            "error": str(e),
+        }
+
+    # For each (host, sid, epoch) we track the latest log timestamp (any state)
+    # for "lastObservedAt", plus the maximum `last_activity_at` value parsed
+    # from the log lines themselves. The daemon embeds the underlying
+    # lockfile/pidfile mtime in every heartbeat as `last_activity_at=<ISO>`,
+    # which is stable across daemon restarts and is what we want to surface
+    # as "last activity" for closed sessions.
+    import datetime as _dt
+    _LAST_ACTIVITY_RE = re.compile(r"last_activity_at=(\S+)")
+
+    latest = {}
+    for stream in data.get("data", {}).get("result", []):
+        labels = stream.get("stream", {})
+        sid = labels.get("session_id")
+        if not sid:
+            continue
+        host = labels.get("host_name", "")
+        epoch = labels.get("session_epoch", "1")
+        try:
+            epoch_i = int(epoch)
+        except ValueError:
+            epoch_i = 1
+        key = (host, sid, epoch_i)
+
+        if key not in latest:
+            latest[key] = {
+                "max_ts_ns": 0,
+                "max_labels": labels,
+                "last_activity_ns": 0,
+            }
+        rec = latest[key]
+
+        for ts_str, line in stream.get("values", []):
+            try:
+                ts_ns = int(ts_str)
+            except ValueError:
+                continue
+            if ts_ns > rec["max_ts_ns"]:
+                rec["max_ts_ns"] = ts_ns
+                rec["max_labels"] = labels
+
+            m = _LAST_ACTIVITY_RE.search(line or "")
+            if m:
+                try:
+                    iso = m.group(1)
+                    # Python's fromisoformat handles RFC3339 incl. offset in 3.11+.
+                    dt = _dt.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                    la_ns = int(dt.timestamp() * 1_000_000_000)
+                    if la_ns > rec["last_activity_ns"]:
+                        rec["last_activity_ns"] = la_ns
+                except (ValueError, OverflowError):
+                    pass
+
+    sessions = []
+    for (host, sid, epoch), rec in latest.items():
+        labels = rec["max_labels"]
+        state = (labels.get("state_current") or "").lower()
+        if state == "ended":
+            continue
+
+        # Prefer the daemon-reported filesystem mtime (stable across restarts).
+        # Fall back to the latest heartbeat timestamp for back-compat with old
+        # log records that don't carry `last_activity_at=`.
+        last_activity_ns = rec["last_activity_ns"] or rec["max_ts_ns"]
+
+        sessions.append({
+            "sessionId": sid,
+            "epoch": epoch,
+            "host": host,
+            "tool": labels.get("tool_name") or "unknown",
+            "state": state or "unknown",
+            "lastObservedAt": _iso(rec["max_ts_ns"]),
+            "lastObservedAgeSeconds": round((now_ns - rec["max_ts_ns"]) / 1e9, 1),
+            "lastActivityMs": last_activity_ns // 1_000_000,
+            "serviceVersion": labels.get("service_version"),
+        })
+    sessions.sort(key=lambda s: (s["host"], s["tool"], s["sessionId"]))
+    return {
+        "sessions": sessions,
+        "queriedAt": _iso(now_ns),
+        "freshnessWindowSeconds": WATCHER_FRESHNESS_SECONDS,
+    }
+
+
+def _iso(ns):
+    """Nanosecond epoch -> RFC3339 string (UTC)."""
+    import datetime
+    return datetime.datetime.fromtimestamp(ns / 1e9, tz=datetime.timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -196,16 +356,44 @@ def query_recent_metric_activity():
     return active
 
 
+def _span_session_id(span):
+    """Claude Code emits session.id; Copilot emits gen_ai.conversation.id.
+    Either is sufficient — they're the conversation/session key."""
+    return (get_attr(span, "gen_ai.conversation.id")
+            or get_attr(span, "session.id"))
+
+
 def compute_sessions(lookback_hours=None):
     lh = lookback_hours or LOOKBACK_HOURS
-    # Query both Copilot and Claude root spans (invoke_agent)
+    # Copilot's per-turn root span (older shape: gen_ai semconv)
     copilot_data = query_tempo(
         '{resource.service.name="github-copilot" && name="invoke_agent"}'
         ' | select(span.gen_ai.conversation.id, span.gen_ai.agent.version,'
         ' span.gen_ai.response.model, span.gen_ai.usage.input_tokens,'
-        ' span.gen_ai.usage.output_tokens, resource.host.name)',
+        ' span.gen_ai.usage.output_tokens, resource.host.name,'
+        ' span.gen_ai.input.messages)',
         lookback_hours=lh,
     )
+    # Claude Code's per-prompt root span (new beta tracing shape) — one span
+    # per user interaction, carries session.id + user_prompt + duration.
+    # The llm_request child spans carry token counts and model name.
+    claude_interactions = query_tempo(
+        '{resource.service.name="claude-code" && name="claude_code.interaction"}'
+        ' | select(span.session.id, span.gen_ai.conversation.id,'
+        ' span.user_prompt, span.user_prompt_length,'
+        ' span.interaction.sequence, resource.host.name)',
+        lookback_hours=lh,
+    )
+    claude_llm = query_tempo(
+        '{resource.service.name="claude-code" && name="claude_code.llm_request"}'
+        ' | select(span.session.id, span.gen_ai.conversation.id,'
+        ' span.gen_ai.request.model, span.input_tokens,'
+        ' span.cache_read_tokens, span.cache_creation_tokens,'
+        ' resource.host.name)',
+        lookback_hours=lh,
+    )
+    # Generic Claude fallback for installations without the beta tracing flag
+    # (in case they emit the older gen_ai-style spans).
     claude_data = query_tempo(
         '{resource.service.name=~"claude.*"}'
         ' | select(span.gen_ai.conversation.id, span.gen_ai.response.model,'
@@ -237,28 +425,68 @@ def compute_sessions(lookback_hours=None):
         "version": "", "duration_ns": 0, "host": "", "model": "",
         "total_input_tokens": 0, "total_output_tokens": 0,
         "trace_ids": set(), "source": "",
+        "last_prompt": "", "last_prompt_at": 0,
     })
     children_max = defaultdict(int)
 
-    def process_spans(data, source_name):
+    def _capture_last_prompt(data):
+        """For each session, remember the user_prompt from the most recent
+        claude_code.interaction span. Run after process_spans so sessions{} is
+        keyed."""
+        for trace in data.get("traces", []):
+            for ss in trace.get("spanSets", []):
+                for span in ss.get("spans", []):
+                    sid = _span_session_id(span)
+                    if not sid: continue
+                    prompt = get_attr(span, "user_prompt") or ""
+                    if not prompt: continue
+                    t = int(span["startTimeUnixNano"]) // 1_000_000
+                    rec = sessions[sid]
+                    if t > rec.get("last_prompt_at", 0):
+                        rec["last_prompt"] = prompt
+                        rec["last_prompt_at"] = t
+
+    def _capture_copilot_last_prompt(data):
+        """Copilot's invoke_agent span carries the full conversation in
+        gen_ai.input.messages (JSON). The last user text part is the prompt
+        that triggered this turn."""
+        for trace in data.get("traces", []):
+            for ss in trace.get("spanSets", []):
+                for span in ss.get("spans", []):
+                    sid = _span_session_id(span)
+                    if not sid: continue
+                    raw = get_attr(span, "gen_ai.input.messages")
+                    if not raw: continue
+                    prompt = _extract_last_user_text(raw)
+                    if not prompt: continue
+                    t = int(span["startTimeUnixNano"]) // 1_000_000
+                    rec = sessions[sid]
+                    if t > rec.get("last_prompt_at", 0):
+                        rec["last_prompt"] = prompt
+                        rec["last_prompt_at"] = t
+
+    def process_spans(data, source_name, is_root):
+        """is_root=True means each span counts as a turn AND seeds the session."""
         for trace in data.get("traces", []):
             trace_id = trace.get("traceID", "")
             for ss in trace.get("spanSets", []):
                 for span in ss.get("spans", []):
-                    sid = get_attr(span, "gen_ai.conversation.id")
+                    sid = _span_session_id(span)
                     if not sid:
                         continue
                     t = int(span["startTimeUnixNano"]) // 1_000_000
                     dur = int(span.get("durationNanos", 0))
                     end_t = t + dur // 1_000_000
                     rec = sessions[sid]
-                    rec["turns"] += 1
+                    if is_root:
+                        rec["turns"] += 1
                     rec["min_time"] = min(rec["min_time"], t)
                     if trace_id:
                         rec["trace_ids"].add(trace_id)
                     if end_t > rec["max_time"]:
                         rec["max_time"] = end_t
-                        rec["duration_ns"] = dur
+                        if is_root:
+                            rec["duration_ns"] = dur
                     if source_name and not rec["source"]:
                         rec["source"] = source_name
                     ver = get_attr(span, "gen_ai.agent.version")
@@ -267,10 +495,15 @@ def compute_sessions(lookback_hours=None):
                     host = get_attr(span, "host.name")
                     if host:
                         rec["host"] = host
-                    model = get_attr(span, "gen_ai.response.model")
+                    # Copilot puts model on root; Claude puts it on llm_request
+                    model = (get_attr(span, "gen_ai.response.model")
+                             or get_attr(span, "gen_ai.request.model")
+                             or get_attr(span, "model"))
                     if model:
                         rec["model"] = model
-                    inp = get_attr(span, "gen_ai.usage.input_tokens")
+                    # Token-attribute names differ across tools/span types
+                    inp = (get_attr(span, "gen_ai.usage.input_tokens")
+                           or get_attr(span, "input_tokens"))
                     if inp:
                         try:
                             rec["total_input_tokens"] += int(inp)
@@ -283,8 +516,12 @@ def compute_sessions(lookback_hours=None):
                         except (ValueError, TypeError):
                             pass
 
-    process_spans(copilot_data, "Copilot")
-    process_spans(claude_data, "Claude")
+    process_spans(copilot_data, "Copilot", is_root=True)
+    process_spans(claude_data, "Claude", is_root=True)
+    process_spans(claude_interactions, "Claude", is_root=True)
+    process_spans(claude_llm, "Claude", is_root=False)
+    _capture_last_prompt(claude_interactions)
+    _capture_copilot_last_prompt(copilot_data)
 
     # Build trace_id -> session_id map from invoke_agent spans
     trace_to_session = {}
@@ -298,7 +535,7 @@ def compute_sessions(lookback_hours=None):
         trace_id = trace.get("traceID", "")
         for ss in trace.get("spanSets", []):
             for span in ss.get("spans", []):
-                sid = get_attr(span, "gen_ai.conversation.id")
+                sid = _span_session_id(span)
                 model = get_attr(span, "gen_ai.response.model")
                 if sid and trace_id:
                     trace_to_session[trace_id] = sid
@@ -312,7 +549,7 @@ def compute_sessions(lookback_hours=None):
             trace_id = trace.get("traceID", "")
             for ss in trace.get("spanSets", []):
                 for span in ss.get("spans", []):
-                    sid = get_attr(span, "gen_ai.conversation.id")
+                    sid = _span_session_id(span)
                     if not sid:
                         sid = trace_to_session.get(trace_id)
                     if not sid:
@@ -414,9 +651,88 @@ def compute_sessions(lookback_hours=None):
             "total_input_tokens": c["total_input_tokens"] if c else 0,
             "total_output_tokens": c["total_output_tokens"] if c else 0,
             "cli_version": c["version"] if c else "",
+            "last_prompt": c.get("last_prompt", "") if c else "",
+            "last_prompt_at": c.get("last_prompt_at", 0) if c else 0,
         })
 
-    rows.sort(key=lambda r: r["last_activity"], reverse=True)
+    # Merge in sessions known to the watcher daemon but not yet seen in Tempo
+    # (newly opened sessions, or sessions whose tool emits no traces).
+    seen_ids = {r["session_id"] for r in rows}
+    try:
+        watcher = get_watcher_state().get("sessions", [])
+    except Exception:
+        watcher = []
+    now_ms = int(time.time() * 1000)
+    for ws in watcher:
+        sid = ws["sessionId"]
+        if sid in seen_ids:
+            # Tempo had data; just tag the row with the watcher's view of state.
+            for r in rows:
+                if r["session_id"] == sid:
+                    r["watcher_state"] = ws.get("state")
+                    r["watcher_host"] = ws.get("host")
+                    r["watcher_tool"] = ws.get("tool")
+                    if not r.get("host"):
+                        r["host"] = ws.get("host", "")
+                    if not r.get("source"):
+                        r["source"] = (ws.get("tool") or "").capitalize()
+            continue
+        # Watcher knows a session Tempo doesn't — surface it from the daemon.
+        watcher_state = (ws.get("state") or "").lower()
+        status = {
+            "active": "Active",
+            "idle": "Idle",
+            "live": "Active",
+            "closed": "Closed",
+            "orphan": "Closed",  # backward-compat for daemons still emitting old label
+        }.get(watcher_state, "Unknown")
+        # For closed sessions, lastActivityMs is the transition time (frozen),
+        # not query time — so the dashboard shows "closed N minutes ago" correctly.
+        last_activity = ws.get("lastActivityMs") or now_ms
+        rows.append({
+            "session_id": sid,
+            "status": status,
+            "source": (ws.get("tool") or "").capitalize(),
+            "host": ws.get("host", ""),
+            "model": "",
+            "last_activity": last_activity,
+            "first_seen": last_activity,
+            "turns": 0,
+            "last_turn_duration_s": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "cli_version": ws.get("serviceVersion", ""),
+            "last_prompt": "",
+            "last_prompt_at": 0,
+            "watcher_state": ws.get("state"),
+            "watcher_host": ws.get("host"),
+            "watcher_tool": ws.get("tool"),
+        })
+
+    # Defensive lookback filter. Tempo's start/end should already bound the
+    # search window, and the watcher only returns sessions within
+    # WATCHER_FRESHNESS_SECONDS, but neither is bulletproof:
+    #   * Tempo can return traces from outside [start,end] when block_retention
+    #     exceeds the requested window or when TraceQL queries lack time
+    #     predicates.
+    #   * Watcher sessions are added with no per-session lookback check — only
+    #     a 5-minute heartbeat freshness — so their `lastActivityMs` (lockfile
+    #     mtime) can be days/weeks old for an idle but still-running CLI.
+    # Without this filter, picking "Last 6 hours" or "Last week" still surfaces
+    # sessions from much further back. Drop any row whose newest activity
+    # signal falls outside the requested window.
+    window_start_ms = now_ms - lh * 3600 * 1000
+    rows = [r for r in rows if r["last_activity"] >= window_start_ms]
+
+    # Sort: active sessions (Responding/Active/Idle/Open) above Closed/Unknown,
+    # then by most-recent activity within each group.
+    def _status_rank(status):
+        s = (status or "").lower()
+        if s in ("responding", "active"): return 0
+        if s in ("idle", "open"): return 1
+        if s == "closed": return 2
+        return 3  # unknown / anything else last
+    rows.sort(key=lambda r: (_status_rank(r["status"]), -r["last_activity"]))
     return rows
 
 
@@ -425,7 +741,7 @@ def compute_sessions(lookback_hours=None):
 # ---------------------------------------------------------------------------
 
 def get_session_detail(session_id):
-    # Query both Copilot and Claude root spans for this session
+    # Copilot's per-turn root spans for this session
     copilot_turns = query_tempo(
         '{resource.service.name="github-copilot" && name="invoke_agent"'
         f' && span.gen_ai.conversation.id="{session_id}"}}'
@@ -433,12 +749,27 @@ def get_session_detail(session_id):
         ' span.gen_ai.usage.output_tokens, span.gen_ai.agent.version,'
         ' resource.host.name)'
     )
+    # Claude older shape (pre-beta) if any
     claude_turns = query_tempo(
         '{resource.service.name=~"claude.*"'
         f' && span.gen_ai.conversation.id="{session_id}"}}'
         ' | select(span.gen_ai.response.model, span.gen_ai.usage.input_tokens,'
         ' span.gen_ai.usage.output_tokens, resource.host.name,'
         ' resource.service.name)'
+    )
+    # Claude new beta tracing — one span per user prompt + per LLM call + per tool
+    claude_interactions = query_tempo(
+        '{resource.service.name="claude-code" && name="claude_code.interaction"'
+        f' && (span.session.id="{session_id}" || span.gen_ai.conversation.id="{session_id}")}}'
+        ' | select(span.session.id, span.gen_ai.conversation.id,'
+        ' span.user_prompt, span.user_prompt_length,'
+        ' span.interaction.sequence, resource.host.name)'
+    )
+    claude_llm = query_tempo(
+        '{resource.service.name="claude-code" && name="claude_code.llm_request"'
+        f' && (span.session.id="{session_id}" || span.gen_ai.conversation.id="{session_id}")}}'
+        ' | select(span.gen_ai.request.model, span.input_tokens,'
+        ' span.cache_read_tokens, span.cache_creation_tokens)'
     )
     # Chat spans carry the model (invoke_agent often doesn't)
     chat_spans = query_tempo(
@@ -499,6 +830,54 @@ def get_session_detail(session_id):
 
     extract_turns(copilot_turns)
     extract_turns(claude_turns)
+
+    # Index Claude llm_request spans by trace_id so we can attach token totals
+    # + model name to the matching interaction.
+    llm_by_trace = {}
+    for trace in claude_llm.get("traces", []):
+        tid = trace.get("traceID", "")
+        for ss in trace.get("spanSets", []):
+            for span in ss.get("spans", []):
+                entry = llm_by_trace.setdefault(tid, {"input": 0, "output": 0,
+                                                       "cache_read": 0,
+                                                       "cache_create": 0,
+                                                       "model": ""})
+                try: entry["input"] += int(get_attr(span, "input_tokens") or 0)
+                except (ValueError, TypeError): pass
+                try: entry["cache_read"] += int(get_attr(span, "cache_read_tokens") or 0)
+                except (ValueError, TypeError): pass
+                try: entry["cache_create"] += int(get_attr(span, "cache_creation_tokens") or 0)
+                except (ValueError, TypeError): pass
+                m = get_attr(span, "gen_ai.request.model") or get_attr(span, "model")
+                if m: entry["model"] = m
+
+    # Convert Claude interaction spans into turn rows. Each interaction = 1
+    # user prompt, so it's the right granularity for the per-turn table.
+    for trace in claude_interactions.get("traces", []):
+        trace_id = trace.get("traceID", "")
+        for ss in trace.get("spanSets", []):
+            for span in ss.get("spans", []):
+                start_ns = int(span["startTimeUnixNano"])
+                dur_ns = int(span.get("durationNanos", 0))
+                h = get_attr(span, "host.name")
+                if h: host = h
+                llm = llm_by_trace.get(trace_id, {})
+                prompt = get_attr(span, "user_prompt") or ""
+                turns.append({
+                    "trace_id": trace_id,
+                    "span_id": span.get("spanID", ""),
+                    "start_time": start_ns // 1_000_000,
+                    "duration_s": round(dur_ns / 1e9, 1),
+                    "model": llm.get("model", ""),
+                    "input_tokens": llm.get("input", 0),
+                    "output_tokens": llm.get("output", 0),
+                    "cache_read_tokens": llm.get("cache_read", 0),
+                    "cache_creation_tokens": llm.get("cache_create", 0),
+                    "user_prompt": prompt,
+                    "user_prompt_length": int(get_attr(span, "user_prompt_length") or 0),
+                    "sequence": int(get_attr(span, "interaction.sequence") or 0),
+                })
+
     turns.sort(key=lambda t: t["start_time"])
     return {
         "session_id": session_id,
@@ -589,25 +968,44 @@ def get_metrics_operations(lookback_hours=None):
     return series
 
 
-def get_metrics_models():
+def get_metrics_models(lookback_hours=None):
+    # Instant queries on a cumulative counter would return all-time totals,
+    # ignoring whatever lookback the user selected on the dashboard. Use
+    # increase() over the window so the donut reflects "tokens used in the
+    # selected window" instead of "tokens used since the metric was first
+    # scraped." `[Xh]` is computed from lookback_hours so 6h/24h/7d all work.
+    lh = lookback_hours or LOOKBACK_HOURS
+    window = f"{lh}h"
     result = query_prometheus(
-        'sum by (gen_ai_response_model) (gen_ai_client_token_usage_count)'
+        f'sum by (gen_ai_response_model) '
+        f'(increase(gen_ai_client_token_usage_count[{window}]))'
     )
     items = []
     for s in result.get("data", {}).get("result", []):
         model = s["metric"].get("gen_ai_response_model", "unknown")
-        items.append({"model": model, "totalInput": float(s["value"][1]), "totalOutput": 0, "count": 1})
+        val = float(s["value"][1])
+        if val <= 0:
+            continue
+        items.append({"model": model, "totalInput": val, "totalOutput": 0, "count": 1})
     return items
 
 
-def get_metrics_tools():
+def get_metrics_tools(lookback_hours=None):
+    # See get_metrics_models — same reasoning. Without the window the tool
+    # bar chart is frozen at all-time call counts regardless of the picker.
+    lh = lookback_hours or LOOKBACK_HOURS
+    window = f"{lh}h"
     result = query_prometheus(
-        'sum by (gen_ai_tool_name) (github_copilot_tool_call_count)'
+        f'sum by (gen_ai_tool_name) '
+        f'(increase(github_copilot_tool_call_count[{window}]))'
     )
     items = []
     for s in result.get("data", {}).get("result", []):
         tool = s["metric"].get("gen_ai_tool_name", "unknown")
-        items.append({"tool": tool, "count": float(s["value"][1]), "avgDurationMs": 0})
+        count = float(s["value"][1])
+        if count <= 0:
+            continue
+        items.append({"tool": tool, "count": count, "avgDurationMs": 0})
     items.sort(key=lambda x: x["count"], reverse=True)
     return items
 
@@ -701,6 +1099,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._error(500, str(e))
 
+        # Watcher state: current live + orphan sessions from the daemon
+        if path in ("/api/sessions/state", "/dashboard-api/sessions/state"):
+            try:
+                return self._json_response(get_watcher_state())
+            except Exception as e:
+                return self._error(500, str(e))
+
         # Session detail
         m = re.match(r"^/dashboard-api/sessions/([^/]+)$", path)
         if m:
@@ -734,14 +1139,14 @@ class Handler(BaseHTTPRequestHandler):
         # Metrics: token usage by model (donut chart)
         if path == "/dashboard-api/metrics/models":
             try:
-                return self._json_response(get_metrics_models())
+                return self._json_response(get_metrics_models(lookback_hours))
             except Exception as e:
                 return self._error(500, str(e))
 
         # Metrics: tool call rate time series
         if path == "/dashboard-api/metrics/tools":
             try:
-                return self._json_response(get_metrics_tools())
+                return self._json_response(get_metrics_tools(lookback_hours))
             except Exception as e:
                 return self._error(500, str(e))
 
