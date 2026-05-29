@@ -679,15 +679,18 @@ def compute_sessions(lookback_hours=None):
             continue
         # Watcher knows a session Tempo doesn't — surface it from the daemon.
         watcher_state = (ws.get("state") or "").lower()
+        # Closed sessions with no Tempo data are zombies: the daemon is still
+        # heartbeating a session that ended days ago, so the heartbeat timestamp
+        # makes them look fresh ("just now") and they have no real content to
+        # show (0 turns / 0 tokens / 0ms). Drop them — closed sessions with
+        # actual activity will come in through the Tempo path above.
+        if watcher_state in ("closed", "orphan"):
+            continue
         status = {
             "active": "Active",
             "idle": "Idle",
             "live": "Active",
-            "closed": "Closed",
-            "orphan": "Closed",  # backward-compat for daemons still emitting old label
         }.get(watcher_state, "Unknown")
-        # For closed sessions, lastActivityMs is the transition time (frozen),
-        # not query time — so the dashboard shows "closed N minutes ago" correctly.
         last_activity = ws.get("lastActivityMs") or now_ms
         rows.append({
             "session_id": sid,
