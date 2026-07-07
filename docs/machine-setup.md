@@ -15,7 +15,9 @@ A machine is "correct" when all three are true:
 
 1. **Persistent env vars** are set for both tools — and `OTEL_SERVICE_NAME` is
    **not** set anywhere.
-2. **Local OTel collector** (Docker) is running and forwarding to Azure.
+2. **Local OTel collector** (Docker) is running and forwarding to Azure, with the
+   **`CopilotOtelCollectorEnsure`** logon task registered to re-bind its ports
+   after restarts.
 3. **session-watcher daemon** is running the latest build.
 
 Both tools run concurrently because nothing forces a shared service identity:
@@ -60,8 +62,10 @@ cd C:\git\OtelCliCapture
 ### 2. Configure env vars + local collector
 
 Sets every persistent user env var for both tools, writes the collector `.env`,
-and starts the local collector that forwards to Azure. It prompts for the client
-secret (or pass `-ClientSecret "..."`).
+starts the local collector that forwards to Azure, and registers the
+`CopilotOtelCollectorEnsure` logon task that re-binds the collector's ports after
+a Docker/host restart (see [Troubleshooting](#troubleshooting)). It prompts for
+the client secret (or pass `-ClientSecret "..."`).
 
 ```powershell
 .\azure-deploy\client\setup-machine.ps1
@@ -103,7 +107,8 @@ git pull
 ### 2. Refresh env vars + local collector
 
 Re-runs the same script. It re-sets every persistent env var (including the
-Copilot ones), restarts the collector, and deliberately does **not** set
+Copilot ones), restarts the collector, re-registers the
+`CopilotOtelCollectorEnsure` self-heal task, and deliberately does **not** set
 `OTEL_SERVICE_NAME`.
 
 ```powershell
@@ -145,6 +150,10 @@ docker ps --format "{{.Names}}`t{{.Status}}" | Select-String "otel-collector"
 Get-Process copilot-session-watcher -ErrorAction SilentlyContinue |
     Select-Object Id, StartTime
 Get-Content "$env:LOCALAPPDATA\CopilotOtel\session-watcher\logs\watcher.log" -Tail 6
+
+# 4. Collector is actually reachable on the host, and the self-heal task exists
+Test-NetConnection 127.0.0.1 -Port 4318 -InformationLevel Quiet   # must be True
+Get-ScheduledTask -TaskName CopilotOtelCollectorEnsure | Select-Object TaskName, State
 ```
 
 Expected:
@@ -155,6 +164,8 @@ Expected:
   `heartbeat claude/<id> state=Active last_activity_at=2026-...` — the
   `last_activity_at=` suffix proves the **new** build is live. (The old build
   omitted it.)
+- `Test-NetConnection ... -Port 4318` returns `True`, and the
+  `CopilotOtelCollectorEnsure` task is `Ready`.
 
 **End-to-end check:** run `claude` in one terminal and `copilot` in another, then
 open the dashboard. You should see the same `host.name` with two distinct sources —
@@ -190,6 +201,15 @@ and does not set `OTEL_SERVICE_NAME`, so it's safe whether you launch `claude` o
 - **No telemetry reaching Azure** → confirm the collector container is `Up` and the
   `.env` next to `azure-deploy\client\docker-compose.yaml` has a current client
   secret. Auth details are in [`../azure-deploy/README.md`](../azure-deploy/README.md).
+- **Collector is `Up` but nothing reaches the dashboard after a restart** → the
+  Docker Desktop for Windows port-proxy race (docker/for-win#3176, #1018): the
+  container came up before the Windows HNS proxy, so `4318` is declared but not
+  bound. Tell: `docker inspect client-otel-collector-1 --format '{{json .NetworkSettings.Ports}}'`
+  shows empty arrays and `Test-NetConnection 127.0.0.1 -Port 4318` is `False`.
+  Heal it immediately with `.\azure-deploy\client\ensure-collector.ps1`, or
+  `docker compose -f azure-deploy\client\docker-compose.yaml up -d --force-recreate`.
+  The `CopilotOtelCollectorEnsure` logon task does this automatically at each
+  logon; re-register it with `.\azure-deploy\client\install-collector-task.ps1`.
 - **Cloud PC shows a random `CPC-...` host** → re-run `setup-machine.ps1` with
   `-MachineName`.
 </content>

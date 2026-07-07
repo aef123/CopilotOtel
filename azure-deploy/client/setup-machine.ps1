@@ -78,6 +78,24 @@ $collectorCompose = Join-Path $ScriptDir "docker-compose.yaml"
 docker compose -f $collectorCompose up -d
 
 # ──────────────────────────────────────────────
+# Step 3b: Register the collector self-heal logon task
+# ──────────────────────────────────────────────
+# Docker Desktop for Windows has a restart race (docker/for-win#3176, #1018):
+# after a host/Docker restart, the `restart: unless-stopped` container can come
+# up before the Windows HNS port proxy, leaving it "Up" but with its published
+# ports (4317/4318) NOT bound to localhost. The CLIs then export into a void.
+# This logon task force-recreates the collector ONLY when 127.0.0.1:4318 isn't
+# listening, healing the binding without disturbing a healthy collector. It also
+# heals right now if the `up -d` above reused a stale, unbound container.
+Write-Host "`n=== Registering collector self-heal task ===" -ForegroundColor Cyan
+try {
+    & (Join-Path $ScriptDir "install-collector-task.ps1") -ScriptDir $ScriptDir
+} catch {
+    Write-Host "  WARNING: could not register CopilotOtelCollectorEnsure task: $_" -ForegroundColor Yellow
+    Write-Host "  Telemetry still works now; re-run .\install-collector-task.ps1 later to add restart resilience." -ForegroundColor Yellow
+}
+
+# ──────────────────────────────────────────────
 # Step 4: Set persistent environment variables
 # ──────────────────────────────────────────────
 Write-Host "`n=== Setting environment variables ===" -ForegroundColor Cyan
@@ -179,6 +197,7 @@ Write-Host "  (Set as persistent User environment variables)"
 Write-Host "`n=== Setup complete ===" -ForegroundColor Green
 Write-Host "  Auth:         oauth2client (automatic token refresh)"
 Write-Host "  Collector:    localhost:4317 (gRPC), localhost:4318 (HTTP)"
+Write-Host "  Self-heal:    CopilotOtelCollectorEnsure logon task (rebinds ports after restarts)"
 Write-Host "  Forwarding:   $ServerUrl`:4318"
 Write-Host "`n  Copilot CLI and Claude Code will emit telemetry automatically in new shells."
 Write-Host "  (Restart your terminal for the env vars to take effect.)"
