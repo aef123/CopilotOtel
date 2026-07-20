@@ -32,12 +32,16 @@ sudo certbot certonly --standalone \
     --email "admin@${DOMAIN}" \
     -d "${DOMAIN}"
 
-# Copy certs into Docker volume
-CERT_DIR="/etc/letsencrypt"
-docker run --rm \
-    -v letsencrypt:/target \
-    -v "${CERT_DIR}:${CERT_DIR}:ro" \
-    alpine sh -c "cp -rL ${CERT_DIR}/live /target/live && cp -rL ${CERT_DIR}/archive /target/archive"
+echo "=== Installing certbot renewal hook ==="
+# nginx mounts the `letsencrypt` volume, not /etc/letsencrypt, so every future
+# renewal has to be copied in and nginx reloaded. Without this hook the stack
+# silently serves the old cert until it expires.
+sudo install -o root -g root -m 0755 \
+    renewal-hook.sh /etc/letsencrypt/renewal-hooks/deploy/10-sync-docker-volume.sh
+
+# Seed the volume with the cert we just obtained. The hook is idempotent and
+# does exactly the copy+reload we need, so run it rather than duplicating it.
+sudo COMPOSE_DIR="$(pwd)" /etc/letsencrypt/renewal-hooks/deploy/10-sync-docker-volume.sh
 
 echo "=== Updating nginx config with domain ==="
 sed -i "s/SERVER_DOMAIN/${DOMAIN}/g" nginx/nginx.conf
