@@ -15,30 +15,12 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
-  # Browser game telemetry (Bitburner). CORS-enabled so the browser can POST; kept on a
-  # separate port + pipeline so game data goes ONLY to the homelab stack (not the Azure
-  # work stack). Bitburner runs in a browser, so without CORS the preflight/POST is blocked.
-  otlp/bitburner:
-    protocols:
-      http:
-        endpoint: 0.0.0.0:4319
-        cors:
-          allowed_origins:
-            - "*"
-          allowed_headers:
-            - "*"
-
 exporters:
-  # Existing Azure stack — OAuth (Entra client-credentials)
+  # Azure stack — OAuth (Entra client-credentials)
   otlphttp/remote:
     endpoint: ${env:SERVER_URL}:4318
     auth:
       authenticator: oauth2client
-
-  # New homelab stack — no auth (internal-first collector on the DMZ VM).
-  # Set the full base URL (incl. port) in .env as HOMELAB_URL.
-  otlphttp/homelab:
-    endpoint: ${env:HOMELAB_URL}
 
   debug:
     verbosity: basic
@@ -46,32 +28,21 @@ exporters:
 processors:
   batch:
 
+# Homelab fan-out (extra exporter + the Bitburner :4319 receiver) lives in the
+# otel-collector-config.homelab.yaml overlay, applied only on machines whose .env
+# sets HOMELAB_URL. See docker-compose.homelab.yaml.
 service:
   extensions: [health_check, oauth2client]
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/remote, otlphttp/homelab]
+      exporters: [otlphttp/remote]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/remote, otlphttp/homelab]
+      exporters: [otlphttp/remote]
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/remote, otlphttp/homelab]
-
-    # Bitburner game telemetry — homelab only (not forwarded to the Azure work stack).
-    traces/bitburner:
-      receivers: [otlp/bitburner]
-      processors: [batch]
-      exporters: [otlphttp/homelab]
-    metrics/bitburner:
-      receivers: [otlp/bitburner]
-      processors: [batch]
-      exporters: [otlphttp/homelab]
-    logs/bitburner:
-      receivers: [otlp/bitburner]
-      processors: [batch]
-      exporters: [otlphttp/homelab]
+      exporters: [otlphttp/remote]

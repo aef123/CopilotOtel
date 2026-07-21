@@ -28,7 +28,12 @@ param(
     # own short name. Defaults to whatever's already set on the machine so
     # re-running the script doesn't clobber a name you set previously, falling
     # back to $env:COMPUTERNAME only if nothing has ever been set.
-    [string]$MachineName
+    [string]$MachineName,
+    # Base URL (incl. port) of a homelab OTel collector to ALSO forward to, e.g.
+    # http://192.168.1.50:4318. Only used on machines with a homelab stack; it
+    # additionally enables the Bitburner CORS receiver on :4319. Defaults to
+    # whatever's already in .env so re-runs don't drop it.
+    [string]$HomelabUrl
 )
 
 $ErrorActionPreference = "Stop"
@@ -66,16 +71,30 @@ if ($oldTask) {
 # ──────────────────────────────────────────────
 Write-Host "`n=== Starting local OTel collector ===" -ForegroundColor Cyan
 
+$envPath = Join-Path $ScriptDir ".env"
+
+# Preserve an existing HOMELAB_URL across re-runs unless one was passed explicitly.
+if (-not $HomelabUrl -and (Test-Path $envPath)) {
+    $existing = Get-Content $envPath | Where-Object { $_ -match '^\s*HOMELAB_URL\s*=\s*(.+?)\s*$' }
+    if ($existing) { $HomelabUrl = $Matches[1] }
+}
+
 $envContent = @"
 SERVER_URL=$ServerUrl
 ENTRA_TENANT_ID=$TenantId
 ENTRA_CLIENT_ID=$ClientId
 ENTRA_CLIENT_SECRET=$ClientSecret
 "@
-[System.IO.File]::WriteAllText((Join-Path $ScriptDir ".env"), $envContent)
+if ($HomelabUrl) { $envContent += "`nHOMELAB_URL=$HomelabUrl" }
+[System.IO.File]::WriteAllText($envPath, $envContent)
 
-$collectorCompose = Join-Path $ScriptDir "docker-compose.yaml"
-docker compose -f $collectorCompose up -d
+# Only machines with a homelab endpoint get the overlay (extra exporter + :4319).
+$composeArgs = @("-f", (Join-Path $ScriptDir "docker-compose.yaml"))
+if ($HomelabUrl) {
+    Write-Host "  HOMELAB_URL set; also forwarding to homelab stack at $HomelabUrl"
+    $composeArgs += @("-f", (Join-Path $ScriptDir "docker-compose.homelab.yaml"))
+}
+docker compose @composeArgs up -d
 
 # ──────────────────────────────────────────────
 # Step 3b: Register the collector self-heal logon task

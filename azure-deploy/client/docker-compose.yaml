@@ -5,12 +5,10 @@ services:
     ports:
       - "4317:4317"
       - "4318:4318"
-      - "4319:4319"   # Bitburner browser telemetry (CORS), forwarded to homelab only
     volumes:
       - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
     environment:
       - SERVER_URL=${SERVER_URL}                 # Azure stack (OAuth)
-      - HOMELAB_URL=${HOMELAB_URL}               # homelab stack (no auth)
       - ENTRA_TENANT_ID=${ENTRA_TENANT_ID}
       - ENTRA_CLIENT_ID=${ENTRA_CLIENT_ID}
       - ENTRA_CLIENT_SECRET=${ENTRA_CLIENT_SECRET}

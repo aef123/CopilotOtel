@@ -1,0 +1,18 @@
+# Homelab override — use ONLY on machines that also feed a homelab Grafana stack
+# (e.g. the gaming machine running Bitburner):
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.homelab.yaml up -d
+#
+# Requires HOMELAB_URL in .env, e.g. HOMELAB_URL=http://192.168.1.50:4318
+# ensure-collector.ps1 / setup-machine.ps1 add this file automatically when .env sets it.
+services:
+  otel-collector:
+    ports:
+      - "4319:4319"   # Bitburner browser telemetry (CORS), forwarded to homelab only
+    volumes:
+      - ./otel-collector-config.homelab.yaml:/etc/otelcol-contrib/config.homelab.yaml
+    command:
+      - --config=/etc/otelcol-contrib/config.yaml
+      - --config=/etc/otelcol-contrib/config.homelab.yaml
+    environment:
+      - HOMELAB_URL=${HOMELAB_URL}

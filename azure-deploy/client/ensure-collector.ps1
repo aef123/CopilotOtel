@@ -98,6 +98,20 @@ if (-not (Test-Path $compose)) {
     exit 1
 }
 
+# Machines that also feed a homelab stack set HOMELAB_URL in .env; they need the
+# homelab override too, or the recreate would silently drop that fan-out.
+$composeArgs = @("-f", $compose)
+$envPath = Join-Path $ScriptDir ".env"
+$homelabCompose = Join-Path $ScriptDir "docker-compose.homelab.yaml"
+if ((Test-Path $envPath) -and (Select-String -Path $envPath -Pattern '^\s*HOMELAB_URL\s*=\s*\S' -Quiet)) {
+    if (Test-Path $homelabCompose) {
+        Write-Log "HOMELAB_URL set in .env; including $homelabCompose."
+        $composeArgs += @("-f", $homelabCompose)
+    } else {
+        Write-Log "HOMELAB_URL set in .env but $homelabCompose is missing; homelab fan-out will be dropped." "WARN"
+    }
+}
+
 # 1. Wait for the Docker engine to be responsive (it may still be starting at
 #    logon). If it never comes up, there's nothing we can do this session.
 $deadline = (Get-Date).AddSeconds($DockerReadyTimeoutSec)
@@ -127,7 +141,7 @@ if (Test-PortOpen -ProbePort $Port) {
 # 3. Port is not bound. This is the Docker Desktop port-proxy race. Recreate the
 #    container from compose so the host port binding is re-established.
 Write-Log "127.0.0.1:$Port not listening; force-recreating collector from $compose." "WARN"
-docker compose -f $compose up -d --force-recreate 2>&1 | ForEach-Object { Write-Log "docker: $_" }
+docker compose @composeArgs up -d --force-recreate 2>&1 | ForEach-Object { Write-Log "docker: $_" }
 
 if ($LASTEXITCODE -ne 0) {
     Write-Log "docker compose up --force-recreate exited with $LASTEXITCODE." "ERROR"
