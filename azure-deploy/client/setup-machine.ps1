@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Sets up a machine to forward Copilot CLI and Claude Code telemetry to the Azure OTel stack.
+    Sets up a machine to forward Copilot CLI and Claude Code telemetry to the homelab OTel stack.
 
 .DESCRIPTION
     Uses the oauth2client extension in the OTel collector to handle token
@@ -9,7 +9,7 @@
 
     This script:
     1. Prompts for the client secret (if not provided)
-    2. Starts a local OTel collector (Docker) that forwards to Azure with auth
+    2. Starts a local OTel collector (Docker) that forwards to the homelab with auth
     3. Sets persistent user environment variables for Copilot CLI and Claude Code
 
 .EXAMPLE
@@ -20,7 +20,10 @@
 param(
     [string]$TenantId = "5df6d88f-0d78-491b-9617-8b43a209ba73",
     [string]$ClientId = "1fcf6578-502c-4a18-a8e0-ac55f1ed133a",
-    [string]$ServerUrl = "https://otel.andrewfaust.com",
+    # Homelab ingest: Cloudflare tunnel -> Traefik -> Entra-authenticated OTel collector.
+    # No ":4318" -- Cloudflare's proxied edge only serves HTTPS on 443/2053/2083/2087/2096/8443.
+    # The old Azure VM at otel.andrewfaust.com is retired.
+    [string]$ServerUrl = "https://ingress.afart.info",
     [string]$ClientSecret,
     [string]$ScriptDir = $PSScriptRoot,
     # Friendly machine name for host.name resource attribute. Cloud PC / VM
@@ -217,6 +220,9 @@ Write-Host "`n=== Setup complete ===" -ForegroundColor Green
 Write-Host "  Auth:         oauth2client (automatic token refresh)"
 Write-Host "  Collector:    localhost:4317 (gRPC), localhost:4318 (HTTP)"
 Write-Host "  Self-heal:    CopilotOtelCollectorEnsure logon task (rebinds ports after restarts)"
-Write-Host "  Forwarding:   $ServerUrl`:4318"
+Write-Host "  Forwarding:   $ServerUrl   (Entra-authenticated, port 443)"
+Write-Host ""
+Write-Host "  Dashboards:   https://grafana.afart.info"
+Write-Host "  Session SPA:  https://grafana.afart.info/dashboard/"
 Write-Host "`n  Copilot CLI and Claude Code will emit telemetry automatically in new shells."
 Write-Host "  (Restart your terminal for the env vars to take effect.)"

@@ -1,16 +1,40 @@
 import json
+import os
 import urllib.request
 import time
 
-TEMPO_UID = "P214B5B846CF3925F"
-INFINITY_UID = "session-api"
-PROM_UID = "prometheus"
+# Target Grafana. Defaults to a local dev instance. For the homelab:
+#   GRAFANA_URL=http://192.168.30.10:3000 GRAFANA_TOKEN=<service-account-token> python <this>
+# The homelab Grafana is not anonymous-admin, so GRAFANA_TOKEN is required there.
+GRAFANA_URL = os.environ.get("GRAFANA_URL", "http://localhost:3000").rstrip("/")
+GRAFANA_TOKEN = os.environ.get("GRAFANA_TOKEN")
+
+# Datasource UIDs — must match the TARGET Grafana's datasources.
+#
+# TEMPO_UID was hardcoded to "P214B5B846CF3925F", the UID Grafana deterministically assigns an
+# unpinned datasource named "Tempo". Correct on the old standalone Azure stack -- but on the merged
+# homelab Grafana that same UID belongs to the LAB Tempo (syslog traces), while CLI traces live in a
+# separate Tempo pinned to uid "tempo". Left as-is, every trace panel silently queries the wrong
+# backend and renders empty with no error.
+TEMPO_UID = os.environ.get("TEMPO_UID", "tempo")
+INFINITY_UID = os.environ.get("INFINITY_UID", "session-api")
+PROM_UID = os.environ.get("PROM_UID", "prometheus")
 DASH_UID = "copilot-mission-control"
+
+
+def _headers(extra=None):
+    h = dict(extra or {})
+    if GRAFANA_TOKEN:
+        h["Authorization"] = f"Bearer {GRAFANA_TOKEN}"
+    return h
+
 
 # Wait for Grafana to be ready
 for i in range(10):
     try:
-        urllib.request.urlopen("http://localhost:3000/api/health")
+        urllib.request.urlopen(
+            urllib.request.Request(f"{GRAFANA_URL}/api/health", headers=_headers())
+        )
         break
     except Exception:
         time.sleep(2)
@@ -143,12 +167,13 @@ dashboard = {
 
 data = json.dumps(dashboard).encode("utf-8")
 req = urllib.request.Request(
-    "http://localhost:3000/api/dashboards/db",
+    f"{GRAFANA_URL}/api/dashboards/db",
     data=data,
-    headers={"Content-Type": "application/json"},
+    headers=_headers({"Content-Type": "application/json"}),
     method="POST",
 )
 resp = urllib.request.urlopen(req)
 result = json.loads(resp.read())
-print(f"Dashboard: http://localhost:3000{result['url']}")
+print(f"Dashboard: {GRAFANA_URL}{result['url']}")
 print(f"Status: {result['status']}")
+print(f"Datasources: prom={PROM_UID} tempo={TEMPO_UID} infinity={INFINITY_UID}")

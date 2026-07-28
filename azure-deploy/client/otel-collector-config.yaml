@@ -16,9 +16,12 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 exporters:
-  # Azure stack — OAuth (Entra client-credentials)
+  # Homelab ingest — OAuth (Entra client-credentials), via Cloudflare tunnel -> Traefik.
   otlphttp/remote:
-    endpoint: ${env:SERVER_URL}:4318
+    # NO port suffix. Cloudflare's proxied edge only serves HTTPS on
+    # 443/2053/2083/2087/2096/8443 -- 4318 is not among them. The retired Azure VM
+    # (otel.andrewfaust.com) listened on :4318 directly, hence the old ${env:SERVER_URL}:4318.
+    endpoint: ${env:SERVER_URL}
     auth:
       authenticator: oauth2client
 

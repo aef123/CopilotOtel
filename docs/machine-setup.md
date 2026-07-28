@@ -41,7 +41,8 @@ The same list applies to both paths (an updated machine already has these):
   *OTel Ingest* → Certificates & secrets → Client secrets. One secret works for
   every machine; auth is shared (client-credentials), not per-machine.
 
-The server stack and Entra apps are already deployed (`otel.andrewfaust.com`), and
+The server stack now runs on the **homelab** (`ingress.afart.info` for ingest,
+`grafana.afart.info` for dashboards; the Azure VM is retired), and
 the tenant/client/server defaults are baked into `setup-machine.ps1` — so a new
 machine only needs the secret above. (If you're standing up the *server* stack
 from scratch, see [`../azure-deploy/README.md`](../azure-deploy/README.md) first.)
@@ -198,7 +199,7 @@ and does not set `OTEL_SERVICE_NAME`, so it's safe whether you launch `claude` o
   Re-run `install-windows.ps1`.
 - **`dotnet publish failed`** → .NET 9 SDK missing. Install it, confirm with
   `dotnet --list-sdks`, re-run.
-- **No telemetry reaching Azure** → confirm the collector container is `Up` and the
+- **No telemetry reaching the homelab** → confirm the collector container is `Up` and the
   `.env` next to `azure-deploy\client\docker-compose.yaml` has a current client
   secret. Auth details are in [`../azure-deploy/README.md`](../azure-deploy/README.md).
 - **Collector is `Up` but nothing reaches the dashboard after a restart** → the
