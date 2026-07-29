@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import urllib.request
@@ -8,6 +9,10 @@ import time
 # The homelab Grafana is not anonymous-admin, so GRAFANA_TOKEN is required there.
 GRAFANA_URL = os.environ.get("GRAFANA_URL", "http://localhost:3000").rstrip("/")
 GRAFANA_TOKEN = os.environ.get("GRAFANA_TOKEN")
+# Basic-auth fallback, so this can be driven from the VM using the admin password out of
+# /opt/docker/secrets/observability.env without minting a service-account token first.
+GRAFANA_USER = os.environ.get("GRAFANA_USER")
+GRAFANA_PASSWORD = os.environ.get("GRAFANA_PASSWORD")
 
 # Datasource UIDs — must match the TARGET Grafana's datasources.
 #
@@ -26,6 +31,9 @@ def _headers(extra=None):
     h = dict(extra or {})
     if GRAFANA_TOKEN:
         h["Authorization"] = f"Bearer {GRAFANA_TOKEN}"
+    elif GRAFANA_USER:
+        basic = base64.b64encode(f"{GRAFANA_USER}:{GRAFANA_PASSWORD}".encode()).decode()
+        h["Authorization"] = f"Basic {basic}"
     return h
 
 
@@ -128,7 +136,13 @@ dashboard = {
             },
             {
                 "type": "timeseries",
-                "title": "gen_ai_client_token_usage_count",
+                # Token rate for EVERY client, not just Copilot. Copilot CLI emits the gen_ai
+                # semconv metric; Claude Code emits claude_code_token_usage_tokens_total and is
+                # split by `job` into claude-code (CLI) and claude-code-desktop (app). `job` is the
+                # only reliable discriminator -- service_name is absent on Claude CLI series.
+                # This panel previously showed only gen_ai_client_token_usage_count, so all Claude
+                # usage (CLI and app alike) was invisible here.
+                "title": "Token rate — all clients",
                 "gridPos": {"h": 10, "w": 24, "x": 0, "y": 16},
                 "datasource": {"type": "prometheus", "uid": PROM_UID},
                 "targets": [
@@ -136,7 +150,14 @@ dashboard = {
                         "refId": "A",
                         "datasource": {"type": "prometheus", "uid": PROM_UID},
                         "expr": "sum(rate(gen_ai_client_token_usage_count[$__rate_interval]))",
-                        "legendFormat": "sum(rate)",
+                        "legendFormat": "github-copilot",
+                        "format": "time_series",
+                    },
+                    {
+                        "refId": "B",
+                        "datasource": {"type": "prometheus", "uid": PROM_UID},
+                        "expr": "sum by (job) (rate(claude_code_token_usage_tokens_total[$__rate_interval]))",
+                        "legendFormat": "{{job}}",
                         "format": "time_series",
                     },
                 ],

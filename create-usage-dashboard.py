@@ -39,8 +39,14 @@ LOKI = os.environ.get("LOKI_UID", "loki")
 DASH_UID = "claude-usage"
 
 # Label selector applied to every query, driven by the template variables.
-SEL = 'host_name=~"$host", model=~"$model"'
-SEL_NOMODEL = 'host_name=~"$host"'   # session/active-time metrics carry no model label
+#
+# `job` is the CLI-vs-app discriminator, and it is the ONLY reliable one:
+#   job="claude-code"          -> Claude Code CLI      (service_name is ABSENT, terminal=visualstudio)
+#   job="claude-code-desktop"  -> Claude desktop app   (terminal=non-interactive)
+# service_name cannot be used for this -- it is missing entirely on CLI series. Verified present on
+# all four claude_code_* metrics.
+SEL = 'job=~"$client", host_name=~"$host", model=~"$model"'
+SEL_NOMODEL = 'job=~"$client", host_name=~"$host"'   # session/active-time carry no model label
 
 _y = 0
 
@@ -280,6 +286,31 @@ panels += [
 _y += 7
 
 # ── Logs ────────────────────────────────────────────────────────────────────────
+# ── CLI vs app ──────────────────────────────────────────────────────────────────
+panels.append(row("CLI vs desktop app"))
+panels += [
+    ts("Cost over time, by client",
+       [prom(f'sum by (job) (increase(claude_code_cost_usage_USD_total{{{SEL}}}[$__interval]))', "{{job}}")],
+       "currencyUSD", 0, _y, 12, 7, stack=True),
+    ts("Tokens over time, by client",
+       [prom(f'sum by (job) (increase(claude_code_token_usage_tokens_total{{{SEL}}}[$__interval]))', "{{job}}")],
+       "short", 12, _y, 12, 7, stack=True),
+]
+_y += 7
+panels += [
+    pie("Cost share: CLI vs app",
+        f'sum by (job) (increase(claude_code_cost_usage_USD_total{{{SEL}}}[$__range]))',
+        "{{job}}", "currencyUSD", 0, _y, 8, 7),
+    bars("Sessions by client",
+         f'count by (job) (count by (session_id, job) (last_over_time(claude_code_token_usage_tokens_total{{{SEL}}}[$__range])))',
+         "{{job}}", "short", 8, _y, 8, 7),
+    bars("Cache hit rate by client",
+         f'sum by (job) (increase(claude_code_token_usage_tokens_total{{{SEL}, type="cacheRead"}}[$__range])) / '
+         f'clamp_min(sum by (job) (increase(claude_code_token_usage_tokens_total{{{SEL}, type=~"cacheRead|input"}}[$__range])), 1)',
+         "{{job}}", "percentunit", 16, _y, 8, 7),
+]
+_y += 7
+
 panels.append(row("Recent activity (logs)"))
 panels.append({
     "type": "logs", "title": "Claude Code / Copilot events",
@@ -303,6 +334,12 @@ dashboard = {
     "time": {"from": "now-7d", "to": "now"},
     "graphTooltip": 1,   # shared crosshair
     "templating": {"list": [
+        {"name": "client", "label": "Client", "type": "query",
+         "datasource": {"type": "prometheus", "uid": PROM},
+         "definition": "label_values(claude_code_cost_usage_USD_total, job)",
+         "query": {"query": "label_values(claude_code_cost_usage_USD_total, job)", "refId": "A"},
+         "multi": True, "includeAll": True, "allValue": ".*", "current": {"text": "All", "value": "$__all"},
+         "refresh": 2, "sort": 1},
         {"name": "host", "label": "Machine", "type": "query",
          "datasource": {"type": "prometheus", "uid": PROM},
          "definition": "label_values(claude_code_cost_usage_USD_total, host_name)",
