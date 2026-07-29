@@ -377,15 +377,20 @@ def compute_sessions(lookback_hours=None):
     # Claude Code's per-prompt root span (new beta tracing shape) — one span
     # per user interaction, carries session.id + user_prompt + duration.
     # The llm_request child spans carry token counts and model name.
+    # service.name is matched with a REGEX, not equality. The Claude desktop app reports
+    # service.name="claude-code-desktop" while the CLI reports "claude-code", so an exact match
+    # silently dropped every app session -- the session dashboard showed CLI sessions only, even
+    # though metrics, logs AND traces were all arriving from the app. Other queries in this file
+    # already used =~"claude.*"; these four did not.
     claude_interactions = query_tempo(
-        '{resource.service.name="claude-code" && name="claude_code.interaction"}'
+        '{resource.service.name=~"claude.*" && name="claude_code.interaction"}'
         ' | select(span.session.id, span.gen_ai.conversation.id,'
         ' span.user_prompt, span.user_prompt_length,'
         ' span.interaction.sequence, resource.host.name)',
         lookback_hours=lh,
     )
     claude_llm = query_tempo(
-        '{resource.service.name="claude-code" && name="claude_code.llm_request"}'
+        '{resource.service.name=~"claude.*" && name="claude_code.llm_request"}'
         ' | select(span.session.id, span.gen_ai.conversation.id,'
         ' span.gen_ai.request.model, span.input_tokens,'
         ' span.cache_read_tokens, span.cache_creation_tokens,'
@@ -761,15 +766,17 @@ def get_session_detail(session_id):
         ' resource.service.name)'
     )
     # Claude new beta tracing — one span per user prompt + per LLM call + per tool
+    # Regex, not equality -- see the note in compute_sessions(). Matches claude-code AND
+    # claude-code-desktop.
     claude_interactions = query_tempo(
-        '{resource.service.name="claude-code" && name="claude_code.interaction"'
+        '{resource.service.name=~"claude.*" && name="claude_code.interaction"'
         f' && (span.session.id="{session_id}" || span.gen_ai.conversation.id="{session_id}")}}'
         ' | select(span.session.id, span.gen_ai.conversation.id,'
         ' span.user_prompt, span.user_prompt_length,'
         ' span.interaction.sequence, resource.host.name)'
     )
     claude_llm = query_tempo(
-        '{resource.service.name="claude-code" && name="claude_code.llm_request"'
+        '{resource.service.name=~"claude.*" && name="claude_code.llm_request"'
         f' && (span.session.id="{session_id}" || span.gen_ai.conversation.id="{session_id}")}}'
         ' | select(span.gen_ai.request.model, span.input_tokens,'
         ' span.cache_read_tokens, span.cache_creation_tokens)'
