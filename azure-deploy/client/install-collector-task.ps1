@@ -34,7 +34,15 @@ if (-not (Test-Path $EnsureScript)) {
 
 # PowerShell 7 is a documented prerequisite (docs/machine-setup.md). Resolve it
 # explicitly so the task doesn't accidentally bind to Windows PowerShell 5.
-$pwsh = (Get-Command pwsh.exe -ErrorAction SilentlyContinue)?.Source
+#
+# NOTE: deliberately avoids the null-conditional operator `(...)?.Source`. That is PS7-only
+# syntax, and a parse error is raised for the WHOLE FILE before any line executes — so when this
+# installer was invoked from Windows PowerShell 5.1 it died with
+# "Unexpected token '?.Source'" instead of the clear message below. The guard against PS5 could
+# not run because PS5 couldn't parse the guard. This form parses on both engines, so the installer
+# works whichever shell launches it, as long as pwsh.exe is installed for the task itself.
+$pwshCmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+$pwsh = if ($pwshCmd) { $pwshCmd.Source } else { $null }
 if (-not $pwsh) {
     throw "pwsh.exe (PowerShell 7+) not found on PATH. Install it, then re-run."
 }
