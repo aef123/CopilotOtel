@@ -49,6 +49,31 @@ from scratch, see [`../azure-deploy/README.md`](../azure-deploy/README.md) first
 
 ---
 
+## Just run one script
+
+Two one-stop scripts. Pick by whether the machine is on the home LAN. Each updates the repo, asks
+for the single credential it needs (telling you exactly where to find it), configures everything,
+installs restart resilience, then verifies it worked.
+
+**Desktop / gaming PC (on the home LAN):**
+```powershell
+pwsh -NoProfile -File .zure-deploy\client\Setup-Telemetry-LanMachine.ps1
+```
+
+**Laptop / work machine / Cloud PC (anywhere else):**
+```powershell
+pwsh -NoProfile -File .zure-deploy\client\Setup-Telemetry-RemoteMachine.ps1
+```
+
+The difference is only the Bitburner feed, which needs a private LAN address: the LAN script enables
+it, the remote script makes sure it's off (and strips a stale setting if the machine used to be on
+the LAN). Everything else is identical, including the shared client secret.
+
+Note `pwsh`, not `powershell` — these need PowerShell 7, and they'll tell you so rather than failing
+oddly.
+
+The step-by-step path below still works and is what these scripts call underneath.
+
 ## First-time setup
 
 Run from a PowerShell 7 terminal.
